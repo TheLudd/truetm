@@ -192,6 +192,9 @@ impl App {
         let area = Rect::new(0, 0, self.width, content_height);
         let positions = self.layout.arrange(&pane_ids, area);
 
+        // Track which panes are in the layout
+        let layout_pane_ids: Vec<_> = positions.iter().map(|(id, _)| *id).collect();
+
         for (pane_id, rect) in positions {
             // Buffer/PTY height is rect.height - 1 to reserve header row
             let buffer_height = rect.height.saturating_sub(1);
@@ -203,8 +206,20 @@ impl App {
             }
         }
 
+        // Hide panes not in layout (e.g., in monocle mode)
+        for &pane_id in &pane_ids {
+            if !layout_pane_ids.contains(&pane_id) {
+                if let Some(pane) = self.panes.get_mut(pane_id) {
+                    pane.rect = Rect::new(0, 0, 0, 0);
+                }
+            }
+        }
+
         // Ensure focus is on a visible pane
         self.panes.ensure_focus_in_view(self.current_view);
+
+        // Force full redraw when layout changes
+        self.compositor.invalidate();
 
         Ok(())
     }
@@ -453,6 +468,10 @@ impl App {
         // Render only visible panes with window numbers
         for (win_num, &pane_id) in visible_ids.iter().enumerate() {
             if let Some(pane) = self.panes.get(pane_id) {
+                // Skip panes with zero-size rect (hidden in monocle mode)
+                if pane.rect.width == 0 || pane.rect.height == 0 {
+                    continue;
+                }
                 if let Some(buffer) = self.buffers.get(&pane.id) {
                     // In broadcast mode, all panes are "active"
                     let is_focused = self.broadcast_mode || Some(pane.id) == focused_id;
