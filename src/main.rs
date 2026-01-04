@@ -130,13 +130,17 @@ impl App {
         }
     }
 
-    /// Create a new pane with current view's tags
+    /// Create a new pane with current view's tags, inheriting cwd from focused pane
     fn create_pane(&mut self) -> Result<PaneId> {
-        self.create_pane_with_tags(self.current_view)
+        // Get cwd from focused pane, or use current directory for initial pane
+        let cwd = self.panes.focused()
+            .and_then(|p| p.get_cwd())
+            .or_else(|| std::env::current_dir().ok());
+        self.create_pane_with_tags(self.current_view, cwd)
     }
 
-    /// Create a new pane with specific tags
-    fn create_pane_with_tags(&mut self, tags: TagSet) -> Result<PaneId> {
+    /// Create a new pane with specific tags and optional working directory
+    fn create_pane_with_tags(&mut self, tags: TagSet, cwd: Option<std::path::PathBuf>) -> Result<PaneId> {
         let id = self.panes.next_id();
 
         // Initial rect - will be updated by layout
@@ -145,7 +149,7 @@ impl App {
 
         // Buffer height is rect.height - 1 to reserve header row
         let buffer_height = rect.height.saturating_sub(1);
-        let pane = Pane::new_with_size(id, rect, tags, &self.shell, &self.env_vars, self.pty_tx.clone(), rect.width, buffer_height)?;
+        let pane = Pane::new_with_size(id, rect, tags, &self.shell, &self.env_vars, cwd, self.pty_tx.clone(), rect.width, buffer_height)?;
         // add() inserts at front (master) and focuses
         self.panes.add(pane);
         self.buffers.insert(id, ScreenBuffer::new(rect.width, buffer_height));

@@ -2,8 +2,9 @@
 
 use crate::tag::TagSet;
 use anyhow::{Context, Result};
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::thread::{self, JoinHandle};
 
@@ -39,6 +40,7 @@ pub struct Pane {
     pub tags: TagSet,
     pty_writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
+    child: Box<dyn Child + Send + Sync>,
     _reader_thread: JoinHandle<()>,
     pub exited: bool,
 }
@@ -51,6 +53,7 @@ impl Pane {
         tags: TagSet,
         shell: &str,
         env_vars: &[(String, String)],
+        cwd: Option<PathBuf>,
         pty_tx: Sender<PtyMessage>,
         pty_cols: u16,
         pty_rows: u16,
@@ -65,14 +68,17 @@ impl Pane {
             })
             .context("Failed to open PTY")?;
 
-        // Build command with environment
+        // Build command with environment and working directory
         let mut cmd = CommandBuilder::new(shell);
         for (key, value) in env_vars {
             cmd.env(key, value);
         }
+        if let Some(dir) = cwd {
+            cmd.cwd(dir);
+        }
 
         // Spawn shell
-        let _child = pair.slave.spawn_command(cmd).context("Failed to spawn shell")?;
+        let child = pair.slave.spawn_command(cmd).context("Failed to spawn shell")?;
 
         // Get reader/writer
         let mut pty_reader = pair.master.try_clone_reader().context("Failed to clone PTY reader")?;
@@ -116,9 +122,21 @@ impl Pane {
             tags,
             pty_writer,
             master: pair.master,
+            child,
             _reader_thread: reader_thread,
             exited: false,
         })
+    }
+
+    /// Get the current working directory of the shell process
+    pub fn get_cwd(&self) -> Option<PathBuf> {
+        // Get the process ID and read /proc/<pid>/cwd
+        if let Some(pid) = self.child.process_id() {
+            let proc_path = format!("/proc/{}/cwd", pid);
+            std::fs::read_link(&proc_path).ok()
+        } else {
+            None
+        }
     }
 
     /// Write bytes to the PTY
