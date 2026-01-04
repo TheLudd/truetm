@@ -1,12 +1,12 @@
 # simplex
 
-A terminal multiplxer that is a [https://www.brain-dump.org/projects/dvtm/](dvtm) clone with truecolor support.
+A terminal multiplexer inspired by [dvtm](https://www.brain-dump.org/projects/dvtm/) with truecolor support.
 
 ## Features
 
 - **Truecolor support** - Full 24-bit RGB color passthrough
-- **dwtm-style tagging** - Windows can have multiple tags, views can show multiple tags
-- **Tiling layouts** - Vertical stack and monocle (fullscreen) layouts
+- **dvtm-style tagging** - Windows can have multiple tags, views can show multiple tags
+- **Tiling layout** - Master window on left, stack on right
 
 ## Installation
 
@@ -40,13 +40,12 @@ All keybindings use `Ctrl+B` as the prefix key.
 ### Window Management
 
 | Key            | Action                                       |
-| -----          | --------                                     |
+| -------------- | -------------------------------------------- |
 | `Ctrl+B c`     | Create new window                            |
 | `Ctrl+B x`     | Close focused window                         |
 | `Ctrl+B j`     | Focus next window                            |
 | `Ctrl+B k`     | Focus previous window                        |
 | `Ctrl+B Enter` | Swap focused window with master              |
-| `Ctrl+B Space` | Cycle to next layout                         |
 | `Ctrl+B h`     | Decrease master width                        |
 | `Ctrl+B l`     | Increase master width                        |
 | `Ctrl+B 1-9`   | Focus window by number                       |
@@ -57,7 +56,7 @@ All keybindings use `Ctrl+B` as the prefix key.
 ### Tags (Workspaces)
 
 | Key          | Action                                            |
-| -----        | --------                                          |
+| ------------ | ------------------------------------------------- |
 | `Ctrl+B v N` | View tag N (1-9)                                  |
 | `Ctrl+B t N` | Set tag N on focused window (replaces other tags) |
 | `Ctrl+B T N` | Toggle tag N on focused window                    |
@@ -65,11 +64,6 @@ All keybindings use `Ctrl+B` as the prefix key.
 Tags work like virtual desktops but more flexible:
 - A window can have multiple tags (appear in multiple views)
 - Closing the last window in a tag returns to the previously visited tag
-
-## Layouts
-
-- **vertical** - Master window on left, stack on right
-- **monocle** - Fullscreen, only shows focused window
 
 ## Building
 
