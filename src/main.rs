@@ -11,7 +11,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute, queue,
     style::ResetColor,
-    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, SetTitle},
 };
 use layout::LayoutManager;
 use pane::{Pane, PaneId, PaneManager, PtyMessage, Rect};
@@ -617,7 +617,7 @@ fn run() -> Result<()> {
 
     // Set up terminal
     terminal::enable_raw_mode().context("Failed to enable raw mode")?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    execute!(io::stdout(), EnterAlternateScreen, SetTitle("dvtr"))?;
 
     // Main loop
     while app.running {
