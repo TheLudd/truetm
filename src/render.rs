@@ -42,6 +42,10 @@ pub struct ScreenBuffer {
     // UTF-8 accumulator
     utf8_buffer: Vec<u8>,
     utf8_remaining: u8,
+    // Alternate screen buffer support
+    saved_cells: Option<Vec<Cell>>,
+    saved_cursor: Option<(u16, u16)>,
+    in_alternate_screen: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -66,6 +70,9 @@ impl ScreenBuffer {
             parse_buffer: Vec::new(),
             utf8_buffer: Vec::new(),
             utf8_remaining: 0,
+            saved_cells: None,
+            saved_cursor: None,
+            in_alternate_screen: false,
         }
     }
 
@@ -324,10 +331,80 @@ impl ScreenBuffer {
                 // Set scrolling region - ignore for now
             }
             b'h' | b'l' => {
-                // Set/reset mode - ignore for now
+                // Set/reset mode
+                let is_set = final_byte == b'h';
+                // Check for private mode (? prefix)
+                if params_str.starts_with('?') {
+                    let mode: Option<u16> = params_str[1..].parse().ok();
+                    if let Some(mode) = mode {
+                        self.handle_private_mode(mode, is_set);
+                    }
+                }
             }
             _ => {}
         }
+    }
+
+    fn handle_private_mode(&mut self, mode: u16, is_set: bool) {
+        match mode {
+            1049 => {
+                // Alternate screen buffer with saved cursor
+                if is_set {
+                    self.enter_alternate_screen();
+                } else {
+                    self.leave_alternate_screen();
+                }
+            }
+            47 | 1047 => {
+                // Alternate screen buffer (without cursor save)
+                if is_set {
+                    self.enter_alternate_screen();
+                } else {
+                    self.leave_alternate_screen();
+                }
+            }
+            _ => {} // Ignore other private modes
+        }
+    }
+
+    fn enter_alternate_screen(&mut self) {
+        if self.in_alternate_screen {
+            return;
+        }
+        // Save current screen and cursor
+        self.saved_cells = Some(self.cells.clone());
+        self.saved_cursor = Some((self.cursor_x, self.cursor_y));
+        self.in_alternate_screen = true;
+        // Clear the screen for the alternate buffer
+        self.erase_all();
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+    }
+
+    fn leave_alternate_screen(&mut self) {
+        if !self.in_alternate_screen {
+            return;
+        }
+        // Restore saved screen and cursor
+        if let Some(saved) = self.saved_cells.take() {
+            // Only restore if dimensions match
+            if saved.len() == self.cells.len() {
+                self.cells = saved;
+            } else {
+                // Dimensions changed, just clear
+                self.erase_all();
+            }
+        } else {
+            self.erase_all();
+        }
+        if let Some((x, y)) = self.saved_cursor.take() {
+            self.cursor_x = x.min(self.width.saturating_sub(1));
+            self.cursor_y = y.min(self.height.saturating_sub(1));
+        } else {
+            self.cursor_x = 0;
+            self.cursor_y = 0;
+        }
+        self.in_alternate_screen = false;
     }
 
     fn process_sgr(&mut self, params: &[u16]) {
