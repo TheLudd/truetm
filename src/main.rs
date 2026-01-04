@@ -449,7 +449,8 @@ impl App {
         for (win_num, &pane_id) in visible_ids.iter().enumerate() {
             if let Some(pane) = self.panes.get(pane_id) {
                 if let Some(buffer) = self.buffers.get(&pane.id) {
-                    let is_focused = Some(pane.id) == focused_id;
+                    // In broadcast mode, all panes are "active"
+                    let is_focused = self.broadcast_mode || Some(pane.id) == focused_id;
                     // Content rect starts at y+1 to leave room for header
                     let content_rect = Rect::new(
                         pane.rect.x,
