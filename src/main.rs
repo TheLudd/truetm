@@ -61,6 +61,8 @@ struct App {
     // Tagging
     current_view: TagSet,
     tag_count: u8,
+    // Tag history stack (unique - each tag appears once, most recent at end)
+    tag_history: Vec<u8>,
 }
 
 impl App {
@@ -99,6 +101,29 @@ impl App {
             running: true,
             current_view: TagSet::single(0), // Start on tag 1 (index 0)
             tag_count: 9,
+            tag_history: vec![0], // Start with tag 0 in history
+        }
+    }
+
+    /// Switch to a tag, updating history (unique stack - moves tag to top if already present)
+    fn switch_to_tag(&mut self, tag: u8) {
+        // Remove tag from history if present (to avoid duplicates)
+        self.tag_history.retain(|&t| t != tag);
+        // Push to top
+        self.tag_history.push(tag);
+        // Update view
+        self.current_view = TagSet::single(tag);
+    }
+
+    /// Go to previous tag in history (pop current, switch to new top)
+    fn go_to_previous_tag(&mut self) {
+        if self.tag_history.len() > 1 {
+            // Pop current tag
+            self.tag_history.pop();
+            // Switch to new top
+            if let Some(&tag) = self.tag_history.last() {
+                self.current_view = TagSet::single(tag);
+            }
         }
     }
 
@@ -134,6 +159,12 @@ impl App {
             let id = pane.id;
             self.panes.remove(id);
             self.buffers.remove(&id);
+
+            // If current tag is now empty, go to previous tag in history
+            if self.panes.visible_in_view(self.current_view).is_empty() {
+                self.go_to_previous_tag();
+            }
+
             if let Err(e) = self.apply_layout() {
                 log::error!("Failed to apply layout after closing pane: {}", e);
             }
@@ -201,6 +232,12 @@ impl App {
                 self.buffers.remove(&id);
             }
             self.panes.remove_exited();
+
+            // If current tag is now empty, go to previous tag in history
+            if self.panes.visible_in_view(self.current_view).is_empty() {
+                self.go_to_previous_tag();
+            }
+
             if let Err(e) = self.apply_layout() {
                 log::error!("Failed to apply layout after removing exited panes: {}", e);
             }
@@ -230,7 +267,7 @@ impl App {
                         PendingCommand::ViewTag => {
                             if num >= 1 && num <= 9 {
                                 let tag = (num - 1) as u8;
-                                self.current_view = TagSet::single(tag);
+                                self.switch_to_tag(tag);
                                 // Auto-create pane if tag is empty
                                 if self.panes.visible_in_view(self.current_view).is_empty() {
                                     self.create_pane()?;
@@ -238,7 +275,7 @@ impl App {
                                 self.apply_layout()?;
                                 self.needs_redraw = true;
                             } else if num == 0 {
-                                // View all tags
+                                // View all tags (doesn't affect history)
                                 self.current_view = TagSet::ALL;
                                 self.apply_layout()?;
                                 self.needs_redraw = true;
