@@ -63,6 +63,8 @@ struct App {
     tag_count: u8,
     // Tag history stack (unique - each tag appears once, most recent at end)
     tag_history: Vec<u8>,
+    // Broadcast mode - send input to all visible panes
+    broadcast_mode: bool,
 }
 
 impl App {
@@ -102,6 +104,7 @@ impl App {
             current_view: TagSet::single(0), // Start on tag 1 (index 0)
             tag_count: 9,
             tag_history: vec![0], // Start with tag 0 in history
+            broadcast_mode: false,
         }
     }
 
@@ -397,15 +400,31 @@ impl App {
                     // Toggle tag: wait for number
                     self.pending_command = Some(PendingCommand::ToggleTag);
                 }
+                KeyCode::Char('a') => {
+                    // Toggle broadcast mode
+                    self.broadcast_mode = !self.broadcast_mode;
+                    self.needs_redraw = true;
+                }
                 _ => {}
             }
             return Ok(());
         }
 
-        // Forward to focused pane
-        if let Some(pane) = self.panes.focused_mut() {
-            let bytes = key_event_to_bytes(&key);
-            pane.write(&bytes)?;
+        // Forward input to pane(s)
+        let bytes = key_event_to_bytes(&key);
+        if self.broadcast_mode {
+            // Send to all visible panes
+            let visible_ids = self.panes.visible_in_view(self.current_view);
+            for id in visible_ids {
+                if let Some(pane) = self.panes.get_mut(id) {
+                    pane.write(&bytes)?;
+                }
+            }
+        } else {
+            // Send to focused pane only
+            if let Some(pane) = self.panes.focused_mut() {
+                pane.write(&bytes)?;
+            }
         }
 
         Ok(())
@@ -528,7 +547,14 @@ impl App {
         // Show layout name
         queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         write!(stdout, "[{}]", self.layout.current_name())?;
-        queue!(stdout, ResetColor)?;
+
+        // Show broadcast indicator
+        if self.broadcast_mode {
+            queue!(stdout, SetForegroundColor(Color::Red), SetAttribute(Attribute::Bold))?;
+            write!(stdout, " [BROADCAST]")?;
+        }
+
+        queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
 
         Ok(())
     }
