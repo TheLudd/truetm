@@ -78,24 +78,6 @@ impl Layout for VerticalStack {
     }
 }
 
-/// Monocle/fullscreen layout: only focused pane visible
-pub struct Monocle;
-
-impl Layout for Monocle {
-    fn name(&self) -> &str {
-        "[ ]"
-    }
-
-    fn arrange(&self, pane_ids: &[PaneId], area: Rect, _config: &LayoutConfig) -> Vec<(PaneId, Rect)> {
-        // Only show first pane (the focused one should be rotated to first)
-        if pane_ids.is_empty() {
-            vec![]
-        } else {
-            vec![(pane_ids[0], area)]
-        }
-    }
-}
-
 /// Layout manager that cycles through available layouts
 pub struct LayoutManager {
     layouts: Vec<Box<dyn Layout>>,
@@ -106,7 +88,7 @@ pub struct LayoutManager {
 impl LayoutManager {
     pub fn new() -> Self {
         Self {
-            layouts: vec![Box::new(VerticalStack), Box::new(Monocle)],
+            layouts: vec![Box::new(VerticalStack)],
             current: 0,
             config: LayoutConfig::default(),
         }
