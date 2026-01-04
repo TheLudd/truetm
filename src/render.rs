@@ -46,6 +46,8 @@ pub struct ScreenBuffer {
     saved_cells: Option<Vec<Cell>>,
     saved_cursor: Option<(u16, u16)>,
     in_alternate_screen: bool,
+    // Window title (set via OSC sequences)
+    title: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -73,6 +75,7 @@ impl ScreenBuffer {
             saved_cells: None,
             saved_cursor: None,
             in_alternate_screen: false,
+            title: None,
         }
     }
 
@@ -238,12 +241,15 @@ impl ScreenBuffer {
     fn process_osc(&mut self, byte: u8) {
         // OSC sequences end with BEL (0x07) or ST (ESC \)
         if byte == 0x07 {
-            // Ignore OSC content for now (title setting, etc.)
+            self.execute_osc();
             self.parse_state = ParseState::Normal;
         } else if byte == 0x1b {
             // Might be ST
             self.parse_buffer.push(byte);
         } else if !self.parse_buffer.is_empty() && *self.parse_buffer.last().unwrap() == 0x1b && byte == b'\\' {
+            // Remove the ESC we added
+            self.parse_buffer.pop();
+            self.execute_osc();
             self.parse_state = ParseState::Normal;
         } else {
             self.parse_buffer.push(byte);
@@ -251,6 +257,24 @@ impl ScreenBuffer {
                 self.parse_state = ParseState::Normal;
             }
         }
+    }
+
+    fn execute_osc(&mut self) {
+        // OSC format: Ps ; Pt where Ps is command number, Pt is parameter text
+        if let Ok(s) = std::str::from_utf8(&self.parse_buffer) {
+            if let Some((cmd, text)) = s.split_once(';') {
+                match cmd {
+                    "0" | "1" | "2" => {
+                        // 0 = set icon name and window title
+                        // 1 = set icon name
+                        // 2 = set window title
+                        self.title = Some(text.to_string());
+                    }
+                    _ => {} // Ignore other OSC commands
+                }
+            }
+        }
+        self.parse_buffer.clear();
     }
 
     fn execute_csi(&mut self) {
@@ -635,6 +659,10 @@ impl ScreenBuffer {
 
     pub fn height(&self) -> u16 {
         self.height
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
     }
 }
 

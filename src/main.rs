@@ -463,8 +463,8 @@ impl App {
                         pane.rect.height.saturating_sub(1),
                     );
                     self.compositor.render_pane(&mut stdout, buffer, content_rect, is_focused)?;
-                    // Draw window number in header row
-                    self.draw_window_number(&mut stdout, pane.rect, win_num + 1, is_focused)?;
+                    // Draw window header with number and title
+                    self.draw_window_header(&mut stdout, pane.rect, win_num + 1, buffer.title(), is_focused)?;
                 }
             }
         }
@@ -558,8 +558,8 @@ impl App {
         Ok(())
     }
 
-    /// Draw window header with number and line
-    fn draw_window_number(&self, stdout: &mut impl Write, rect: Rect, num: usize, is_focused: bool) -> Result<()> {
+    /// Draw window header with number, title, and line
+    fn draw_window_header(&self, stdout: &mut impl Write, rect: Rect, num: usize, title: Option<&str>, is_focused: bool) -> Result<()> {
         use crossterm::style::{SetForegroundColor, Color, Attribute, SetAttribute};
 
         queue!(stdout, MoveTo(rect.x, rect.y))?;
@@ -574,9 +574,30 @@ impl App {
         let num_str = format!("[{}]", num);
         write!(stdout, "{}", num_str)?;
 
+        // Calculate remaining width for title and line
+        let mut remaining = rect.width.saturating_sub(num_str.len() as u16) as usize;
+
+        // Draw title if present
+        if let Some(title) = title {
+            if remaining > 2 {
+                write!(stdout, " ")?;
+                remaining -= 1;
+                // Truncate title if too long (leave room for trailing line)
+                let max_title_len = remaining.saturating_sub(1);
+                if title.len() <= max_title_len {
+                    write!(stdout, "{}", title)?;
+                    remaining -= title.len();
+                } else if max_title_len > 3 {
+                    write!(stdout, "{}…", &title[..max_title_len - 1])?;
+                    remaining -= max_title_len;
+                }
+                write!(stdout, " ")?;
+                remaining = remaining.saturating_sub(1);
+            }
+        }
+
         // Draw line for the rest of the header
-        let line_width = rect.width.saturating_sub(num_str.len() as u16);
-        for _ in 0..line_width {
+        for _ in 0..remaining {
             write!(stdout, "─")?;
         }
 
