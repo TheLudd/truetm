@@ -7,7 +7,7 @@ mod tag;
 
 use anyhow::{Context, Result};
 use crossterm::{
-    cursor::MoveTo,
+    cursor::{MoveTo, Show},
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute, queue,
     style::ResetColor,
@@ -510,13 +510,13 @@ impl App {
         // Render status bar at bottom
         self.render_status_bar(&mut stdout)?;
 
-        // Position cursor in focused pane (if visible)
+        // Position cursor in focused pane (if visible and has size)
         if let Some(pane) = self.panes.focused() {
-            if visible_ids.contains(&pane.id) {
+            if visible_ids.contains(&pane.id) && pane.rect.width > 0 && pane.rect.height > 0 {
                 if let Some(buffer) = self.buffers.get(&pane.id) {
                     let (cx, cy) = buffer.cursor();
                     // +1 to account for header row
-                    queue!(stdout, MoveTo(pane.rect.x + cx, pane.rect.y + 1 + cy))?;
+                    queue!(stdout, MoveTo(pane.rect.x + cx, pane.rect.y + 1 + cy), Show)?;
                 }
             }
         }
@@ -571,7 +571,7 @@ impl App {
 
         // Show layout name
         queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
-        write!(stdout, "[{}]", self.layout.current_name())?;
+        write!(stdout, "{}", self.layout.current_name())?;
 
         queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
 
@@ -590,12 +590,12 @@ impl App {
             queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         }
 
-        // Draw window number
-        let num_str = format!("[{}]", num);
+        // Draw dashes and window number
+        let num_str = format!("──[{}]", num);
         write!(stdout, "{}", num_str)?;
 
         // Calculate remaining width for title and line
-        let mut remaining = rect.width.saturating_sub(num_str.len() as u16) as usize;
+        let mut remaining = rect.width.saturating_sub(num_str.chars().count() as u16) as usize;
 
         // Draw title if present
         if let Some(title) = title {
