@@ -30,7 +30,7 @@ pub struct VerticalStack;
 
 impl Layout for VerticalStack {
     fn name(&self) -> &str {
-        "vertical"
+        "[]="
     }
 
     fn arrange(&self, pane_ids: &[PaneId], area: Rect, config: &LayoutConfig) -> Vec<(PaneId, Rect)> {
@@ -83,7 +83,7 @@ pub struct Monocle;
 
 impl Layout for Monocle {
     fn name(&self) -> &str {
-        "monocle"
+        "[ ]"
     }
 
     fn arrange(&self, pane_ids: &[PaneId], area: Rect, _config: &LayoutConfig) -> Vec<(PaneId, Rect)> {

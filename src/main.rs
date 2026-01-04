@@ -472,7 +472,7 @@ impl App {
 
         // Draw separators between visible panes
         let content_height = self.height.saturating_sub(1);
-        if visible_ids.len() > 1 && self.layout.current_name() == "vertical" {
+        if visible_ids.len() > 1 && self.layout.current_name() == "[]=" {
             // Find the master pane (first visible)
             if let Some(&master_id) = visible_ids.first() {
                 if let Some(master) = self.panes.get(master_id) {
