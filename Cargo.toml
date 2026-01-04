@@ -1,0 +1,37 @@
+[package]
+name = "dvtr"
+version = "0.1.0"
+edition = "2021"
+description = "A truecolor-enabled terminal multiplexer inspired by dvtm"
+license = "MIT"
+
+[dependencies]
+# PTY handling
+portable-pty = "0.8"
+
+# Terminal I/O
+crossterm = "0.28"
+
+# Configuration
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+
+# Event polling
+mio = { version = "1.0", features = ["os-poll", "os-ext"] }
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# System
+libc = "0.2"
+
+# Directory paths
+dirs = "5.0"
