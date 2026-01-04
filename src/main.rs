@@ -549,12 +549,6 @@ impl App {
         queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         write!(stdout, "[{}]", self.layout.current_name())?;
 
-        // Show broadcast indicator
-        if self.broadcast_mode {
-            queue!(stdout, SetForegroundColor(Color::Red), SetAttribute(Attribute::Bold))?;
-            write!(stdout, " [BROADCAST]")?;
-        }
-
         queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
 
         Ok(())
