@@ -496,7 +496,7 @@ impl App {
         Ok(())
     }
 
-    /// Draw window header with number and green line
+    /// Draw window header with number and line
     fn draw_window_number(&self, stdout: &mut impl Write, rect: Rect, num: usize, is_focused: bool) -> Result<()> {
         use crossterm::style::{SetForegroundColor, Color, Attribute, SetAttribute};
 
@@ -505,14 +505,14 @@ impl App {
         if is_focused {
             queue!(stdout, SetForegroundColor(Color::Green), SetAttribute(Attribute::Bold))?;
         } else {
-            queue!(stdout, SetForegroundColor(Color::DarkGreen))?;
+            queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         }
 
         // Draw window number
         let num_str = format!("[{}]", num);
         write!(stdout, "{}", num_str)?;
 
-        // Draw green line for the rest of the header
+        // Draw line for the rest of the header
         let line_width = rect.width.saturating_sub(num_str.len() as u16);
         for _ in 0..line_width {
             write!(stdout, "─")?;

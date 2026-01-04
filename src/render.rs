@@ -629,8 +629,15 @@ impl Compositor {
         rect: Rect,
         focused: bool,
     ) -> std::io::Result<()> {
+        use crossterm::style::{Attribute, SetAttribute};
+
         for y in 0..rect.height.min(buffer.height()) {
             queue!(writer, MoveTo(rect.x, rect.y + y), ResetColor)?;
+
+            // Dim unfocused panes
+            if !focused {
+                queue!(writer, SetAttribute(Attribute::Dim))?;
+            }
 
             let mut last_fg: Option<Color> = None;
             let mut last_bg: Option<Color> = None;
@@ -643,8 +650,10 @@ impl Compositor {
                 let need_bg_change = cell.bg != last_bg;
 
                 if need_fg_change || need_bg_change {
-                    // Reset and apply both colors fresh to avoid state confusion
                     queue!(writer, ResetColor)?;
+                    if !focused {
+                        queue!(writer, SetAttribute(Attribute::Dim))?;
+                    }
                     if let Some(fg) = cell.fg {
                         queue!(writer, SetForegroundColor(fg))?;
                     }
@@ -658,7 +667,7 @@ impl Compositor {
                 write!(writer, "{}", cell.ch)?;
             }
 
-            queue!(writer, ResetColor)?;
+            queue!(writer, ResetColor, SetAttribute(Attribute::Reset))?;
         }
 
         // Position cursor in focused pane
