@@ -8,6 +8,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TagSet(pub u64);
 
+#[allow(dead_code)]
 impl TagSet {
     /// No tags
     pub const NONE: TagSet = TagSet(0);

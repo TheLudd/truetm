@@ -44,18 +44,6 @@ pub struct Pane {
 }
 
 impl Pane {
-    /// Create a new pane with a shell (PTY sized to rect dimensions)
-    pub fn new(
-        id: PaneId,
-        rect: Rect,
-        tags: TagSet,
-        shell: &str,
-        env_vars: &[(String, String)],
-        pty_tx: Sender<PtyMessage>,
-    ) -> Result<Self> {
-        Self::new_with_size(id, rect, tags, shell, env_vars, pty_tx, rect.width, rect.height)
-    }
-
     /// Create a new pane with a shell and explicit PTY size
     pub fn new_with_size(
         id: PaneId,
@@ -153,15 +141,6 @@ impl Pane {
         Ok(())
     }
 
-    /// Update the pane's rectangle and resize PTY if dimensions changed
-    pub fn set_rect(&mut self, rect: Rect) -> Result<()> {
-        if rect.width != self.rect.width || rect.height != self.rect.height {
-            self.resize(rect.width, rect.height)?;
-        }
-        self.rect = rect;
-        Ok(())
-    }
-
     /// Update the pane's rectangle with explicit PTY size
     pub fn set_rect_with_size(&mut self, rect: Rect, pty_cols: u16, pty_rows: u16) -> Result<()> {
         self.resize(pty_cols, pty_rows)?;
@@ -228,47 +207,9 @@ impl PaneManager {
         &self.panes
     }
 
-    /// Get all panes mutably
-    pub fn all_mut(&mut self) -> &mut [Pane] {
-        &mut self.panes
-    }
-
-    /// Number of panes
-    pub fn len(&self) -> usize {
-        self.panes.len()
-    }
-
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.panes.is_empty()
-    }
-
-    /// Focus the next pane
-    pub fn focus_next(&mut self) {
-        if self.panes.is_empty() {
-            return;
-        }
-        self.focus = Some(match self.focus {
-            Some(i) => (i + 1) % self.panes.len(),
-            None => 0,
-        });
-    }
-
-    /// Focus the previous pane
-    pub fn focus_prev(&mut self) {
-        if self.panes.is_empty() {
-            return;
-        }
-        self.focus = Some(match self.focus {
-            Some(i) => {
-                if i == 0 {
-                    self.panes.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        });
     }
 
     /// Remove a pane by ID
@@ -304,11 +245,6 @@ impl PaneManager {
         for id in exited_ids {
             self.remove(id);
         }
-    }
-
-    /// Get pane IDs in order (for layout)
-    pub fn ordered_ids(&self) -> Vec<PaneId> {
-        self.panes.iter().map(|p| p.id).collect()
     }
 
     /// Get pane IDs visible in the given view (have any of the view's tags)
@@ -419,26 +355,10 @@ impl PaneManager {
         }
     }
 
-    /// Focus a specific pane by index
-    pub fn focus_index(&mut self, idx: usize) {
-        if idx < self.panes.len() {
-            self.focus = Some(idx);
-        }
-    }
-
     /// Focus a specific pane by ID
     pub fn focus_by_id(&mut self, id: PaneId) {
         if let Some(pos) = self.panes.iter().position(|p| p.id == id) {
             self.focus = Some(pos);
-        }
-    }
-
-    /// Get the index of the last pane
-    pub fn last_index(&self) -> Option<usize> {
-        if self.panes.is_empty() {
-            None
-        } else {
-            Some(self.panes.len() - 1)
         }
     }
 }

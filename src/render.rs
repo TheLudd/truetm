@@ -14,7 +14,6 @@ pub struct Cell {
     pub ch: char,
     pub fg: Option<Color>,
     pub bg: Option<Color>,
-    pub bold: bool,
 }
 
 impl Default for Cell {
@@ -23,7 +22,6 @@ impl Default for Cell {
             ch: ' ',
             fg: None,
             bg: None,
-            bold: false,
         }
     }
 }
@@ -38,7 +36,6 @@ pub struct ScreenBuffer {
     // Current text attributes
     current_fg: Option<Color>,
     current_bg: Option<Color>,
-    current_bold: bool,
     // Parser state
     parse_state: ParseState,
     parse_buffer: Vec<u8>,
@@ -65,7 +62,6 @@ impl ScreenBuffer {
             cursor_y: 0,
             current_fg: None,
             current_bg: None,
-            current_bold: false,
             parse_state: ParseState::Normal,
             parse_buffer: Vec::new(),
             utf8_buffer: Vec::new(),
@@ -339,7 +335,6 @@ impl ScreenBuffer {
             // Reset
             self.current_fg = None;
             self.current_bg = None;
-            self.current_bold = false;
             return;
         }
 
@@ -349,10 +344,8 @@ impl ScreenBuffer {
                 0 => {
                     self.current_fg = None;
                     self.current_bg = None;
-                    self.current_bold = false;
                 }
-                1 => self.current_bold = true,
-                22 => self.current_bold = false,
+                1 | 22 => {} // Bold on/off - ignored
                 30..=37 => self.current_fg = Some(ansi_to_color(params[i] - 30)),
                 38 => {
                     // Extended foreground
@@ -409,7 +402,6 @@ impl ScreenBuffer {
                 ch,
                 fg: self.current_fg,
                 bg: self.current_bg,
-                bold: self.current_bold,
             };
         }
         self.cursor_x += 1;
@@ -488,7 +480,6 @@ impl ScreenBuffer {
             ch: ' ',
             fg: None,
             bg: self.current_bg,
-            bold: false,
         }
     }
 
@@ -676,15 +667,6 @@ impl Compositor {
             queue!(writer, MoveTo(rect.x + cx, rect.y + cy))?;
         }
 
-        Ok(())
-    }
-
-    /// Draw a vertical separator
-    pub fn draw_separator<W: Write>(&self, writer: &mut W, x: u16, y: u16, height: u16) -> std::io::Result<()> {
-        for row in y..(y + height) {
-            queue!(writer, MoveTo(x, row))?;
-            write!(writer, "│")?;
-        }
         Ok(())
     }
 }
