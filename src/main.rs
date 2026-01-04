@@ -617,7 +617,7 @@ fn run() -> Result<()> {
 
     // Set up terminal
     terminal::enable_raw_mode().context("Failed to enable raw mode")?;
-    execute!(io::stdout(), EnterAlternateScreen, SetTitle("dvtr"))?;
+    execute!(io::stdout(), EnterAlternateScreen, SetTitle("simplex"))?;
 
     // Main loop
     while app.running {

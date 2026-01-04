@@ -8,12 +8,12 @@ build:
 	cargo build --release
 
 install: build
-	install -Dm755 target/release/dvtr $(DESTDIR)$(BINDIR)/dvtr
-	install -Dm644 dvtr.1 $(DESTDIR)$(MANDIR)/dvtr.1
+	install -Dm755 target/release/simplex $(DESTDIR)$(BINDIR)/simplex
+	install -Dm644 simplex.1 $(DESTDIR)$(MANDIR)/simplex.1
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/dvtr
-	rm -f $(DESTDIR)$(MANDIR)/dvtr.1
+	rm -f $(DESTDIR)$(BINDIR)/simplex
+	rm -f $(DESTDIR)$(MANDIR)/simplex.1
 
 clean:
 	cargo clean

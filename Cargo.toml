@@ -1,8 +1,8 @@
 [package]
-name = "dvtr"
+name = "simplex"
 version = "0.1.0"
 edition = "2021"
-description = "A truecolor-enabled terminal multiplexer inspired by dvtm"
+description = "A simple truecolor terminal multiplexer"
 license = "MIT"
 
 [dependencies]

@@ -1,11 +1,11 @@
-.TH DVTR 1 "January 2026" "dvtr 0.1.0" "User Commands"
+.TH SIMPLEX 1 "January 2026" "simplex 0.1.0" "User Commands"
 .SH NAME
-dvtr \- truecolor terminal multiplexer
+simplex \- simple truecolor terminal multiplexer
 .SH SYNOPSIS
-.B dvtr
+.B simplex
 .SH DESCRIPTION
-.B dvtr
-is a terminal multiplexer with truecolor support, inspired by dvtm. It uses a
+.B simplex
+is a simple terminal multiplexer with truecolor support. It uses a
 dwm-style tagging system where windows can have multiple tags and views can
 display windows with any of the selected tags.
 .SH KEYBINDINGS
@@ -45,7 +45,7 @@ Focus window by number.
 Toggle broadcast mode (send input to all visible windows).
 .TP
 .B Ctrl+B q
-Quit dvtr.
+Quit simplex.
 .TP
 .B Ctrl+B b
 Send a literal Ctrl+B to the focused window.
@@ -71,14 +71,14 @@ Tags work like virtual desktops but are more flexible. A window can have
 multiple tags, making it appear in multiple views. The view displays all
 windows that have any of the currently selected tags.
 
-When the last window in a tag is closed, dvtr automatically switches to the
+When the last window in a tag is closed, simplex automatically switches to the
 previously visited tag.
 .SH BROADCAST MODE
 When broadcast mode is enabled (toggle with Ctrl+B a), all keyboard input is
 sent to every visible window simultaneously. This is useful for running the
 same commands across multiple terminals.
 .SH CONFIGURATION
-dvtr follows the dwm philosophy of compile-time configuration. Settings are
+simplex follows the dwm philosophy of compile-time configuration. Settings are
 modified by editing the source code and recompiling.
 .SH SEE ALSO
 .BR dvtm (1),
@@ -87,4 +87,4 @@ modified by editing the source code and recompiling.
 .SH AUTHOR
 Written with assistance from Claude.
 .SH BUGS
-Report bugs at: https://github.com/yourusername/dvtr/issues
+Report bugs at: https://github.com/yourusername/simplex/issues

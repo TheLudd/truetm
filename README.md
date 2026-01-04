@@ -1,6 +1,6 @@
-# dvtr
+# simplex
 
-A truecolor-enabled terminal multiplexer inspired by [dvtm](https://www.brain-dump.org/projects/dvtm/). Like dvtm, it uses a dwm-style tagging system instead of traditional tabs.
+A simple truecolor terminal multiplexer. Uses dwm-style tagging instead of traditional tabs.
 
 ## Features
 
@@ -15,8 +15,8 @@ A truecolor-enabled terminal multiplexer inspired by [dvtm](https://www.brain-du
 ### From source
 
 ```sh
-git clone https://github.com/yourusername/dvtr
-cd dvtr
+git clone https://github.com/yourusername/simplex
+cd simplex
 make
 sudo make install
 ```
@@ -25,20 +25,14 @@ Or manually:
 
 ```sh
 cargo build --release
-sudo cp target/release/dvtr /usr/local/bin/
-sudo cp dvtr.1 /usr/local/share/man/man1/  # optional: install man page
-```
-
-### Arch Linux (AUR)
-
-```sh
-# Coming soon
+sudo cp target/release/simplex /usr/local/bin/
+sudo cp simplex.1 /usr/local/share/man/man1/  # optional: install man page
 ```
 
 ## Usage
 
 ```sh
-dvtr
+simplex
 ```
 
 ## Keybindings
@@ -59,7 +53,7 @@ All keybindings use `Ctrl+B` as the prefix key.
 | `Ctrl+B l` | Increase master width |
 | `Ctrl+B 1-9` | Focus window by number |
 | `Ctrl+B a` | Toggle broadcast mode (input to all windows) |
-| `Ctrl+B q` | Quit dvtr |
+| `Ctrl+B q` | Quit simplex |
 | `Ctrl+B b` | Send literal Ctrl+B to window |
 
 ### Tags (Workspaces)
@@ -89,7 +83,7 @@ cargo build --release
 
 ## Configuration
 
-dvtr follows the dwm philosophy: configuration is done at compile time by editing the source code. Key settings can be found in `src/main.rs`.
+simplex follows the dwm philosophy: configuration is done at compile time by editing the source code. Key settings can be found in `src/main.rs`.
 
 ## License
 
