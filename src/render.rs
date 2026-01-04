@@ -9,7 +9,7 @@ use crossterm::{
 use std::io::Write;
 
 /// A cell in the screen buffer
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Cell {
     pub ch: char,
     pub fg: Option<Color>,
@@ -694,12 +694,28 @@ fn ansi_to_bright_color(n: u16) -> Color {
     }
 }
 
+/// Cell with focus state for differential rendering
+#[derive(Clone, Copy, PartialEq)]
+struct RenderedCell {
+    cell: Cell,
+    focused: bool,
+}
+
+impl Default for RenderedCell {
+    fn default() -> Self {
+        Self {
+            cell: Cell::default(),
+            focused: true,
+        }
+    }
+}
+
 /// Compositor renders all pane buffers to the terminal
 pub struct Compositor {
     width: u16,
     height: u16,
     // Track what's currently on screen to minimize updates
-    last_frame: Vec<Cell>,
+    last_frame: Vec<RenderedCell>,
 }
 
 impl Compositor {
@@ -707,17 +723,25 @@ impl Compositor {
         Self {
             width,
             height,
-            last_frame: vec![Cell::default(); (width as usize) * (height as usize)],
+            last_frame: vec![RenderedCell::default(); (width as usize) * (height as usize)],
         }
     }
 
     pub fn resize(&mut self, width: u16, height: u16) {
         self.width = width;
         self.height = height;
-        self.last_frame = vec![Cell::default(); (width as usize) * (height as usize)];
+        // Fill with a marker that forces redraw
+        self.last_frame = vec![RenderedCell::default(); (width as usize) * (height as usize)];
     }
 
-    /// Render a pane's buffer to the given rect
+    /// Mark the entire frame as dirty (forces full redraw)
+    pub fn invalidate(&mut self) {
+        for cell in &mut self.last_frame {
+            cell.cell.ch = '\x00'; // Invalid char forces redraw
+        }
+    }
+
+    /// Render a pane's buffer to the given rect with differential updates
     pub fn render_pane<W: Write>(
         &mut self,
         writer: &mut W,
@@ -727,25 +751,54 @@ impl Compositor {
     ) -> std::io::Result<()> {
         use crossterm::style::{Attribute, SetAttribute};
 
+        let mut last_fg: Option<Color> = None;
+        let mut last_bg: Option<Color> = None;
+        let mut need_move = true;
+        let mut attr_set = false;
+
         for y in 0..rect.height.min(buffer.height()) {
-            queue!(writer, MoveTo(rect.x, rect.y + y), ResetColor)?;
-
-            // Dim unfocused panes
-            if !focused {
-                queue!(writer, SetAttribute(Attribute::Dim))?;
-            }
-
-            let mut last_fg: Option<Color> = None;
-            let mut last_bg: Option<Color> = None;
+            let screen_y = rect.y + y;
 
             for x in 0..rect.width.min(buffer.width()) {
+                let screen_x = rect.x + x;
                 let cell = buffer.get(x, y);
 
-                // Only emit color changes when needed
-                let need_fg_change = cell.fg != last_fg;
-                let need_bg_change = cell.bg != last_bg;
+                // Check if this cell needs updating
+                let screen_idx = (screen_y as usize) * (self.width as usize) + (screen_x as usize);
+                if screen_idx < self.last_frame.len() {
+                    let last = &self.last_frame[screen_idx];
+                    if last.cell.ch == cell.ch
+                        && last.cell.fg == cell.fg
+                        && last.cell.bg == cell.bg
+                        && last.focused == focused
+                    {
+                        // Cell unchanged, skip it
+                        need_move = true;
+                        continue;
+                    }
+                }
 
-                if need_fg_change || need_bg_change {
+                // Cell changed - emit it
+                if need_move {
+                    queue!(writer, MoveTo(screen_x, screen_y))?;
+                    need_move = false;
+                    // Reset color state after move
+                    last_fg = None;
+                    last_bg = None;
+                    attr_set = false;
+                }
+
+                // Set dim attribute for unfocused panes
+                if !focused && !attr_set {
+                    queue!(writer, SetAttribute(Attribute::Dim))?;
+                    attr_set = true;
+                } else if focused && attr_set {
+                    queue!(writer, SetAttribute(Attribute::Reset))?;
+                    attr_set = false;
+                }
+
+                // Only emit color changes when needed
+                if cell.fg != last_fg || cell.bg != last_bg {
                     queue!(writer, ResetColor)?;
                     if !focused {
                         queue!(writer, SetAttribute(Attribute::Dim))?;
@@ -761,15 +814,19 @@ impl Compositor {
                 }
 
                 write!(writer, "{}", cell.ch)?;
+
+                // Update last_frame
+                if screen_idx < self.last_frame.len() {
+                    self.last_frame[screen_idx] = RenderedCell { cell, focused };
+                }
             }
 
-            queue!(writer, ResetColor, SetAttribute(Attribute::Reset))?;
+            // End of row - next row needs MoveTo
+            need_move = true;
         }
 
-        // Position cursor in focused pane
-        if focused {
-            let (cx, cy) = buffer.cursor();
-            queue!(writer, MoveTo(rect.x + cx, rect.y + cy))?;
+        if attr_set {
+            queue!(writer, SetAttribute(Attribute::Reset))?;
         }
 
         Ok(())

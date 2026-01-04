@@ -11,7 +11,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute, queue,
     style::ResetColor,
-    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, SetTitle},
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen, SetTitle},
 };
 use layout::LayoutManager;
 use pane::{Pane, PaneId, PaneManager, PtyMessage, Rect};
@@ -116,6 +116,8 @@ impl App {
         self.tag_history.push(tag);
         // Update view
         self.current_view = TagSet::single(tag);
+        // Force full redraw since visible panes changed
+        self.compositor.invalidate();
     }
 
     /// Go to previous tag in history (pop current, switch to new top)
@@ -127,6 +129,8 @@ impl App {
             if let Some(&tag) = self.tag_history.last() {
                 self.current_view = TagSet::single(tag);
             }
+            // Force full redraw since visible panes changed
+            self.compositor.invalidate();
         }
     }
 
@@ -441,9 +445,6 @@ impl App {
         }
 
         let mut stdout = io::stdout();
-
-        // Clear screen
-        queue!(stdout, Clear(ClearType::All))?;
 
         // Get visible panes and focused pane
         let visible_ids = self.panes.visible_in_view(self.current_view);
