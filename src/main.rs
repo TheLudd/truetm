@@ -615,6 +615,10 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 // Find which pane was clicked
                 if let Some((pane_id, buf_x, buf_y)) = self.pane_at_position(x, y) {
+                    // Clear old selection by invalidating compositor
+                    if self.mouse_selection.is_some() {
+                        self.compositor.invalidate();
+                    }
                     // Start selection
                     self.mouse_selection = Some(MouseSelection {
                         pane_id,
@@ -650,6 +654,8 @@ impl App {
                             self.copy_to_clipboard(&text)?;
                         }
                     }
+                    // Clear selection highlight
+                    self.compositor.invalidate();
                     self.needs_redraw = true;
                 }
             }
@@ -750,13 +756,39 @@ impl App {
         }
     }
 
-    /// Copy text to clipboard via OSC 52
+    /// Copy text to clipboard via xclip (fallback: OSC 52)
     fn copy_to_clipboard(&mut self, text: &str) -> Result<()> {
-        // OSC 52: ESC ] 52 ; c ; <base64> BEL
-        // We write this to stdout since we want the outer terminal (st) to receive it
+        use std::process::{Command, Stdio};
+
+        // Try xclip first (works reliably on X11)
+        if let Ok(mut child) = Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+            return Ok(());
+        }
+
+        // Try xsel as fallback
+        if let Ok(mut child) = Command::new("xsel")
+            .args(["--clipboard", "--input"])
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+            return Ok(());
+        }
+
+        // Last resort: OSC 52 (requires terminal support)
         let encoded = base64_encode(text);
         let osc52 = format!("\x1b]52;c;{}\x07", encoded);
-
         let mut stdout = io::stdout();
         write!(stdout, "{}", osc52)?;
         stdout.flush()?;
