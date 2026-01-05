@@ -3,7 +3,7 @@ name = "truetm"
 version = "0.1.0"
 edition = "2021"
 description = "A simple truecolor terminal multiplexer"
-license = "MIT"
+license = "Unlicense"
 
 [dependencies]
 portable-pty = "0.8"

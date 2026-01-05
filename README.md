@@ -96,6 +96,11 @@ Scrollback stores up to 1000 lines of history per window.
 
 truetm follows the dwm philosophy: configuration is done at compile time by editing `src/config.rs`. This file contains all keybindings and settings in a readable format.
 
+## Author
+
+Fully vibe coded with [Claude Code](https://claude.com/claude-code) and Opus 4.5.
+
 ## License
-MIT
+
+[Unlicense](UNLICENSE) - Public domain. Do whatever you want.
 
