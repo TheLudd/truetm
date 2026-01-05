@@ -531,6 +531,7 @@ impl App {
             let mut exit_copy_mode = false;
             let mut yank_selection = false;
             let mut do_first_non_blank = false;
+            let mut do_line_end = false;
 
             if let Some(ref mut copy_state) = self.copy_mode {
                 match key.code {
@@ -558,7 +559,7 @@ impl App {
                         copy_state.move_to_line_start();
                     }
                     KeyCode::Char('$') => {
-                        copy_state.move_to_line_end();
+                        do_line_end = true;
                     }
                     KeyCode::Char('^') => {
                         do_first_non_blank = true;
@@ -610,14 +611,18 @@ impl App {
                 }
             }
 
-            // Handle ^ motion (needs separate borrow for line content)
-            if do_first_non_blank {
+            // Handle $ and ^ motions (need separate borrow for line content)
+            if do_line_end || do_first_non_blank {
                 if let Some(pane) = self.panes.focused() {
                     if let Some(buffer) = self.buffers.get(&pane.id) {
                         if let Some(ref copy_state) = self.copy_mode {
                             let line = self.get_line_content(buffer, copy_state.cursor.y);
                             if let Some(ref mut cs) = self.copy_mode {
-                                cs.move_to_first_non_blank(&line);
+                                if do_line_end {
+                                    cs.move_to_line_end(&line);
+                                } else {
+                                    cs.move_to_first_non_blank(&line);
+                                }
                             }
                         }
                     }

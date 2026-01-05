@@ -162,9 +162,13 @@ impl CopyModeState {
         self.move_cursor(BufferPos::new(0, self.cursor.y));
     }
 
-    /// Move to end of line ($)
-    pub fn move_to_line_end(&mut self) {
-        let end_x = self.buffer_width.saturating_sub(1);
+    /// Move to end of line ($) - moves to last non-space character
+    pub fn move_to_line_end(&mut self, line_content: &[char]) {
+        // Find last non-space character
+        let end_x = line_content
+            .iter()
+            .rposition(|&c| c != ' ')
+            .unwrap_or(0) as u16;
         self.move_cursor(BufferPos::new(end_x, self.cursor.y));
     }
 
@@ -347,9 +351,11 @@ mod tests {
         state.move_to_line_start();
         assert_eq!(state.cursor.x, 0);
 
-        // Move to end
-        state.move_to_line_end();
-        assert_eq!(state.cursor.x, 79);
+        // Move to end (with line content "hello     " padded to 80)
+        let mut line: Vec<char> = "hello".chars().collect();
+        line.resize(80, ' ');
+        state.move_to_line_end(&line);
+        assert_eq!(state.cursor.x, 4); // last char of "hello" is at index 4
     }
 
     #[test]
