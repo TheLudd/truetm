@@ -68,6 +68,8 @@ pub struct ScreenBuffer {
     height: u16,
     cursor_x: u16,
     cursor_y: u16,
+    // Responses to send back to the application (e.g., cursor position reports)
+    response_queue: Vec<Vec<u8>>,
     // Current text attributes
     current_fg: Option<Color>,
     current_bg: Option<Color>,
@@ -112,6 +114,7 @@ impl ScreenBuffer {
             height,
             cursor_x: 0,
             cursor_y: 0,
+            response_queue: Vec::new(),
             current_fg: None,
             current_bg: None,
             current_attrs: Attrs::default(),
@@ -129,6 +132,11 @@ impl ScreenBuffer {
             scrollback: std::collections::VecDeque::new(),
             scrollback_limit: DEFAULT_SCROLLBACK,
         }
+    }
+
+    /// Drain any responses that need to be sent back to the application
+    pub fn drain_responses(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.response_queue)
     }
 
     /// Resize the buffer
@@ -613,6 +621,33 @@ impl ScreenBuffer {
                     self.scroll_down();
                 }
             }
+            b'n' => {
+                // DSR - Device Status Report
+                let param = params.first().copied().unwrap_or(0);
+                match param {
+                    5 => {
+                        // Status report - respond with "OK"
+                        self.response_queue.push(b"\x1b[0n".to_vec());
+                    }
+                    6 => {
+                        // Cursor position report - respond with CSI row;col R
+                        let response = format!(
+                            "\x1b[{};{}R",
+                            self.cursor_y + 1,
+                            self.cursor_x + 1
+                        );
+                        self.response_queue.push(response.into_bytes());
+                    }
+                    _ => {}
+                }
+            }
+            b'c' => {
+                // DA - Device Attributes
+                if params.first().copied().unwrap_or(0) == 0 {
+                    // Primary DA - report as VT100
+                    self.response_queue.push(b"\x1b[?1;0c".to_vec());
+                }
+            }
             _ => {}
         }
     }
@@ -638,6 +673,25 @@ impl ScreenBuffer {
                 } else {
                     self.leave_alternate_screen();
                 }
+            }
+            // Mouse tracking modes - we ignore these but must consume them
+            // so the escape sequences don't leak through
+            1000 | 1002 | 1003 | 1006 | 1015 => {
+                // Mouse tracking: normal, button, any-event, SGR, URXVT
+                // We don't support mouse input, just ignore
+            }
+            // Bracketed paste mode
+            2004 => {
+                // We don't handle bracketed paste, just ignore
+            }
+            // Focus events
+            1004 => {
+                // Focus in/out reporting - ignore
+            }
+            // Application cursor keys
+            1 => {
+                // DECCKM - Application cursor keys mode
+                // Changes arrow key sequences - we just ignore
             }
             _ => {} // Ignore other private modes
         }

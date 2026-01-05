@@ -251,6 +251,16 @@ impl App {
                         buffer.process(&data);
                         self.needs_redraw = true;
                         had_data = true;
+
+                        // Send any terminal responses back to the PTY
+                        let responses = buffer.drain_responses();
+                        if !responses.is_empty() {
+                            if let Some(pane) = self.panes.get_mut(pane_id) {
+                                for response in responses {
+                                    let _ = pane.write(&response);
+                                }
+                            }
+                        }
                     }
                 }
                 PtyMessage::Exit { pane_id } => {
