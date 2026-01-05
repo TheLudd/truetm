@@ -60,6 +60,7 @@ All keybindings use `Ctrl+B` as the prefix key.
 | `Ctrl+B Enter` | Swap focused window with master              |
 | `Ctrl+B h`     | Decrease master width                        |
 | `Ctrl+B l`     | Increase master width                        |
+| `Ctrl+B z`     | Toggle zoom (fullscreen focused window)      |
 | `Ctrl+B 1-9`   | Focus window by number                       |
 | `Ctrl+B a`     | Toggle broadcast mode (input to all windows) |
 | `Ctrl+B q`     | Quit truetm                                  |

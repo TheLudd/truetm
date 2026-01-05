@@ -50,6 +50,7 @@ pub const KEY_TOGGLE_TAG: KeyCode = KeyCode::Char('T');
 // Modes
 pub const KEY_TOGGLE_BROADCAST: KeyCode = KeyCode::Char('a');
 pub const KEY_ENTER_SCROLL: KeyCode = KeyCode::Char('[');
+pub const KEY_ZOOM: KeyCode = KeyCode::Char('z');
 
 // ============================================================================
 // SCROLL MODE KEYBINDINGS

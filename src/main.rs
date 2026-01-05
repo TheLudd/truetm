@@ -73,6 +73,8 @@ struct App {
     // Scroll mode - viewing scrollback
     scroll_mode: bool,
     scroll_offset: usize,
+    // Zoom mode - focused pane is fullscreen
+    zoomed_pane: Option<PaneId>,
 }
 
 impl App {
@@ -115,6 +117,7 @@ impl App {
             broadcast_mode: false,
             scroll_mode: false,
             scroll_offset: 0,
+            zoomed_pane: None,
         }
     }
 
@@ -178,6 +181,12 @@ impl App {
     fn close_focused_pane(&mut self) {
         if let Some(pane) = self.panes.focused() {
             let id = pane.id;
+
+            // Exit zoom mode if closing zoomed pane
+            if self.zoomed_pane == Some(id) {
+                self.zoomed_pane = None;
+            }
+
             self.panes.remove(id);
             self.buffers.remove(&id);
 
@@ -200,27 +209,56 @@ impl App {
         // Content area excludes status bar (1 row at bottom)
         let content_height = self.height.saturating_sub(1);
         let area = Rect::new(0, 0, self.width, content_height);
-        let positions = self.layout.arrange(&pane_ids, area);
 
-        // Track which panes are in the layout
-        let layout_pane_ids: Vec<_> = positions.iter().map(|(id, _)| *id).collect();
-
-        for (pane_id, rect) in positions {
-            // Buffer/PTY height is rect.height - 1 to reserve header row
-            let buffer_height = rect.height.saturating_sub(1);
-            if let Some(pane) = self.panes.get_mut(pane_id) {
-                pane.set_rect_with_size(rect, rect.width, buffer_height)?;
+        // In zoom mode, only show the zoomed pane
+        if let Some(zoomed_id) = self.zoomed_pane {
+            // Check if zoomed pane is still visible in current view
+            if pane_ids.contains(&zoomed_id) {
+                // Give zoomed pane the full area
+                let buffer_height = area.height.saturating_sub(1);
+                if let Some(pane) = self.panes.get_mut(zoomed_id) {
+                    pane.set_rect_with_size(area, area.width, buffer_height)?;
+                }
+                if let Some(buffer) = self.buffers.get_mut(&zoomed_id) {
+                    buffer.resize(area.width, buffer_height);
+                }
+                // Hide all other panes
+                for &pane_id in &pane_ids {
+                    if pane_id != zoomed_id {
+                        if let Some(pane) = self.panes.get_mut(pane_id) {
+                            pane.rect = Rect::new(0, 0, 0, 0);
+                        }
+                    }
+                }
+            } else {
+                // Zoomed pane no longer visible, exit zoom mode
+                self.zoomed_pane = None;
+                return self.apply_layout(); // Re-apply without zoom
             }
-            if let Some(buffer) = self.buffers.get_mut(&pane_id) {
-                buffer.resize(rect.width, buffer_height);
-            }
-        }
+        } else {
+            // Normal layout
+            let positions = self.layout.arrange(&pane_ids, area);
 
-        // Hide panes not in layout (e.g., in monocle mode)
-        for &pane_id in &pane_ids {
-            if !layout_pane_ids.contains(&pane_id) {
+            // Track which panes are in the layout
+            let layout_pane_ids: Vec<_> = positions.iter().map(|(id, _)| *id).collect();
+
+            for (pane_id, rect) in positions {
+                // Buffer/PTY height is rect.height - 1 to reserve header row
+                let buffer_height = rect.height.saturating_sub(1);
                 if let Some(pane) = self.panes.get_mut(pane_id) {
-                    pane.rect = Rect::new(0, 0, 0, 0);
+                    pane.set_rect_with_size(rect, rect.width, buffer_height)?;
+                }
+                if let Some(buffer) = self.buffers.get_mut(&pane_id) {
+                    buffer.resize(rect.width, buffer_height);
+                }
+            }
+
+            // Hide panes not in layout (e.g., in monocle mode)
+            for &pane_id in &pane_ids {
+                if !layout_pane_ids.contains(&pane_id) {
+                    if let Some(pane) = self.panes.get_mut(pane_id) {
+                        pane.rect = Rect::new(0, 0, 0, 0);
+                    }
                 }
             }
         }
@@ -444,6 +482,20 @@ impl App {
                     self.scroll_offset = 0;
                     self.compositor.invalidate();
                     self.needs_redraw = true;
+                }
+                k if k == config::KEY_ZOOM => {
+                    if let Some(focused) = self.panes.focused() {
+                        let focused_id = focused.id;
+                        if self.zoomed_pane == Some(focused_id) {
+                            // Already zoomed on this pane, unzoom
+                            self.zoomed_pane = None;
+                        } else {
+                            // Zoom on focused pane
+                            self.zoomed_pane = Some(focused_id);
+                        }
+                        self.apply_layout()?;
+                        self.needs_redraw = true;
+                    }
                 }
                 _ => {}
             }
@@ -676,6 +728,12 @@ impl App {
         // Show layout name
         queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         write!(stdout, "{}", self.layout.current_name())?;
+
+        // Show zoom indicator
+        if self.zoomed_pane.is_some() {
+            queue!(stdout, SetForegroundColor(Color::Magenta), SetAttribute(Attribute::Bold))?;
+            write!(stdout, " [Z]")?;
+        }
 
         // Show scroll mode indicator
         if self.scroll_mode {
