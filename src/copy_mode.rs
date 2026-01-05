@@ -1,5 +1,23 @@
 //! Vim-style copy mode for scrollback navigation and text selection
 
+use regex::Regex;
+
+/// Search input mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    None,
+    Forward,  // /
+    Backward, // ?
+}
+
+/// Find char mode for f/F/t/T
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FindChar {
+    pub char: char,
+    pub forward: bool,  // f/t = true, F/T = false
+    pub inclusive: bool, // f/F = true (on char), t/T = false (before/after char)
+}
+
 /// Character classification for word motions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CharClass {
@@ -87,6 +105,12 @@ pub struct CopyModeState {
     pub buffer_width: u16,    // Buffer width
     pub scrollback_len: usize, // Total scrollback lines available
     pub count: Option<u32>,   // Numeric prefix for motions (e.g., 5j)
+    // Search state
+    pub search_mode: SearchMode,
+    pub search_input: String,
+    pub last_search: Option<(String, bool)>, // (pattern, forward)
+    pub last_find: Option<FindChar>,
+    pub pending_find: Option<(bool, bool)>, // (forward, inclusive) - waiting for char
 }
 
 impl CopyModeState {
@@ -101,6 +125,11 @@ impl CopyModeState {
             buffer_width,
             scrollback_len,
             count: None,
+            search_mode: SearchMode::None,
+            search_input: String::new(),
+            last_search: None,
+            last_find: None,
+            pending_find: None,
         }
     }
 
@@ -454,6 +483,211 @@ impl CopyModeState {
         }
 
         self.move_cursor(BufferPos::new(pos as u16, self.cursor.y));
+    }
+
+    // === Search Methods ===
+
+    /// Start search input mode
+    pub fn start_search(&mut self, forward: bool) {
+        self.search_mode = if forward { SearchMode::Forward } else { SearchMode::Backward };
+        self.search_input.clear();
+    }
+
+    /// Cancel search input
+    pub fn cancel_search(&mut self) {
+        self.search_mode = SearchMode::None;
+        self.search_input.clear();
+    }
+
+    /// Add character to search input
+    pub fn search_push_char(&mut self, c: char) {
+        self.search_input.push(c);
+    }
+
+    /// Remove last character from search input
+    pub fn search_pop_char(&mut self) {
+        self.search_input.pop();
+    }
+
+    /// Execute search and move to first match
+    /// Returns true if a match was found
+    pub fn execute_search<F>(&mut self, get_line: F) -> bool
+    where
+        F: Fn(i32) -> Vec<char>,
+    {
+        if self.search_input.is_empty() {
+            self.search_mode = SearchMode::None;
+            return false;
+        }
+
+        let forward = self.search_mode == SearchMode::Forward;
+        let pattern = self.search_input.clone();
+        self.last_search = Some((pattern.clone(), forward));
+        self.search_mode = SearchMode::None;
+
+        self.search_next_impl(&pattern, forward, get_line)
+    }
+
+    /// Search for next occurrence (n)
+    pub fn search_next<F>(&mut self, get_line: F) -> bool
+    where
+        F: Fn(i32) -> Vec<char>,
+    {
+        if let Some((ref pattern, forward)) = self.last_search.clone() {
+            self.search_next_impl(&pattern, forward, get_line)
+        } else {
+            false
+        }
+    }
+
+    /// Search for previous occurrence (N)
+    pub fn search_prev<F>(&mut self, get_line: F) -> bool
+    where
+        F: Fn(i32) -> Vec<char>,
+    {
+        if let Some((ref pattern, forward)) = self.last_search.clone() {
+            self.search_next_impl(&pattern, !forward, get_line)
+        } else {
+            false
+        }
+    }
+
+    fn search_next_impl<F>(&mut self, pattern: &str, forward: bool, get_line: F) -> bool
+    where
+        F: Fn(i32) -> Vec<char>,
+    {
+        let re = match Regex::new(pattern) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+
+        let min_y = -(self.scrollback_len as i32);
+        let max_y = (self.buffer_height as i32) - 1;
+
+        // Search starting from current position
+        let start_x = self.cursor.x as usize;
+        let start_y = self.cursor.y;
+
+        if forward {
+            // Forward search: current line (after cursor), then subsequent lines
+            let line: String = get_line(start_y).into_iter().collect();
+            if let Some(m) = re.find(&line[start_x.saturating_add(1).min(line.len())..]) {
+                let new_x = start_x + 1 + m.start();
+                self.move_cursor(BufferPos::new(new_x as u16, start_y));
+                return true;
+            }
+
+            // Search subsequent lines
+            for y in (start_y + 1)..=max_y {
+                let line: String = get_line(y).into_iter().collect();
+                if let Some(m) = re.find(&line) {
+                    self.move_cursor(BufferPos::new(m.start() as u16, y));
+                    return true;
+                }
+            }
+
+            // Wrap to top and search to current position
+            for y in min_y..start_y {
+                let line: String = get_line(y).into_iter().collect();
+                if let Some(m) = re.find(&line) {
+                    self.move_cursor(BufferPos::new(m.start() as u16, y));
+                    return true;
+                }
+            }
+        } else {
+            // Backward search: current line (before cursor), then previous lines
+            let line: String = get_line(start_y).into_iter().collect();
+            let before = &line[..start_x];
+            if let Some(m) = re.find_iter(before).last() {
+                self.move_cursor(BufferPos::new(m.start() as u16, start_y));
+                return true;
+            }
+
+            // Search previous lines
+            for y in (min_y..start_y).rev() {
+                let line: String = get_line(y).into_iter().collect();
+                if let Some(m) = re.find_iter(&line).last() {
+                    self.move_cursor(BufferPos::new(m.start() as u16, y));
+                    return true;
+                }
+            }
+
+            // Wrap to bottom and search to current position
+            for y in ((start_y + 1)..=max_y).rev() {
+                let line: String = get_line(y).into_iter().collect();
+                if let Some(m) = re.find_iter(&line).last() {
+                    self.move_cursor(BufferPos::new(m.start() as u16, y));
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    // === Find Char Methods (f/F/t/T) ===
+
+    /// Start waiting for find char
+    pub fn start_find_char(&mut self, forward: bool, inclusive: bool) {
+        self.pending_find = Some((forward, inclusive));
+    }
+
+    /// Execute find char motion
+    pub fn do_find_char(&mut self, c: char, line_content: &[char]) -> bool {
+        let (forward, inclusive) = match self.pending_find.take() {
+            Some(f) => f,
+            None => return false,
+        };
+
+        self.last_find = Some(FindChar { char: c, forward, inclusive });
+        self.find_char_impl(c, forward, inclusive, line_content)
+    }
+
+    /// Repeat last find (;)
+    pub fn repeat_find(&mut self, line_content: &[char]) -> bool {
+        if let Some(find) = self.last_find {
+            self.find_char_impl(find.char, find.forward, find.inclusive, line_content)
+        } else {
+            false
+        }
+    }
+
+    /// Repeat last find in opposite direction (,)
+    pub fn repeat_find_reverse(&mut self, line_content: &[char]) -> bool {
+        if let Some(find) = self.last_find {
+            self.find_char_impl(find.char, !find.forward, find.inclusive, line_content)
+        } else {
+            false
+        }
+    }
+
+    fn find_char_impl(&mut self, c: char, forward: bool, inclusive: bool, line_content: &[char]) -> bool {
+        let x = self.cursor.x as usize;
+        let len = line_content.len();
+
+        if forward {
+            // Search forward from cursor+1
+            for i in (x + 1)..len {
+                if line_content[i] == c {
+                    let new_x = if inclusive { i } else { i.saturating_sub(1) };
+                    self.move_cursor(BufferPos::new(new_x as u16, self.cursor.y));
+                    return true;
+                }
+            }
+        } else {
+            // Search backward from cursor-1
+            if x > 0 {
+                for i in (0..x).rev() {
+                    if line_content[i] == c {
+                        let new_x = if inclusive { i } else { i + 1 };
+                        self.move_cursor(BufferPos::new(new_x as u16, self.cursor.y));
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
     }
 }
 

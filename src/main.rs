@@ -533,6 +533,78 @@ impl App {
             let mut do_first_non_blank = false;
             let mut do_line_end = false;
             let mut do_word_motion: Option<(bool, bool, bool)> = None; // (forward, end, big_word)
+            let mut do_search_next = false;
+            let mut do_search_prev = false;
+            let mut do_find_char: Option<(bool, bool)> = None; // (forward, inclusive)
+            let mut do_repeat_find = false;
+            let mut do_repeat_find_reverse = false;
+
+            // Check if we're in search input mode or pending find char
+            let in_search_input = self.copy_mode.as_ref()
+                .map(|c| c.search_mode != copy_mode::SearchMode::None)
+                .unwrap_or(false);
+            let pending_find = self.copy_mode.as_ref()
+                .map(|c| c.pending_find.is_some())
+                .unwrap_or(false);
+
+            // Handle search input mode
+            if in_search_input {
+                if let Some(ref mut copy_state) = self.copy_mode {
+                    match key.code {
+                        KeyCode::Esc => {
+                            copy_state.cancel_search();
+                        }
+                        KeyCode::Enter => {
+                            // Execute search handled below
+                        }
+                        KeyCode::Backspace => {
+                            copy_state.search_pop_char();
+                        }
+                        KeyCode::Char(c) => {
+                            copy_state.search_push_char(c);
+                        }
+                        _ => {}
+                    }
+                }
+                // Execute search on Enter
+                if key.code == KeyCode::Enter {
+                    if let Some(pane) = self.panes.focused() {
+                        if let Some(buffer) = self.buffers.get(&pane.id) {
+                            let get_line = |y: i32| get_line_content_static(buffer, y);
+                            if let Some(ref mut copy_state) = self.copy_mode {
+                                copy_state.execute_search(get_line);
+                            }
+                        }
+                    }
+                }
+                self.compositor.invalidate();
+                self.needs_redraw = true;
+                return Ok(());
+            }
+
+            // Handle pending find char (f/F/t/T waiting for char)
+            if pending_find {
+                if let KeyCode::Char(c) = key.code {
+                    if let Some(pane) = self.panes.focused() {
+                        if let Some(buffer) = self.buffers.get(&pane.id) {
+                            if let Some(ref copy_state) = self.copy_mode {
+                                let line = self.get_line_content(buffer, copy_state.cursor.y);
+                                if let Some(ref mut cs) = self.copy_mode {
+                                    cs.do_find_char(c, &line);
+                                    cs.reset_count();
+                                }
+                            }
+                        }
+                    }
+                } else if key.code == KeyCode::Esc {
+                    if let Some(ref mut copy_state) = self.copy_mode {
+                        copy_state.pending_find = None;
+                    }
+                }
+                self.compositor.invalidate();
+                self.needs_redraw = true;
+                return Ok(());
+            }
 
             if let Some(ref mut copy_state) = self.copy_mode {
                 let count = copy_state.get_count();
@@ -665,6 +737,44 @@ impl App {
                         copy_state.reset_count();
                     }
 
+                    // Search: /, ?
+                    KeyCode::Char('/') => {
+                        copy_state.start_search(true);
+                    }
+                    KeyCode::Char('?') => {
+                        copy_state.start_search(false);
+                    }
+
+                    // Search next/prev: n, N
+                    KeyCode::Char('n') => {
+                        do_search_next = true;
+                    }
+                    KeyCode::Char('N') => {
+                        do_search_prev = true;
+                    }
+
+                    // Find char: f, F, t, T
+                    KeyCode::Char('f') => {
+                        do_find_char = Some((true, true)); // forward, inclusive
+                    }
+                    KeyCode::Char('F') => {
+                        do_find_char = Some((false, true)); // backward, inclusive
+                    }
+                    KeyCode::Char('t') => {
+                        do_find_char = Some((true, false)); // forward, till (not inclusive)
+                    }
+                    KeyCode::Char('T') => {
+                        do_find_char = Some((false, false)); // backward, till
+                    }
+
+                    // Repeat find: ;, ,
+                    KeyCode::Char(';') => {
+                        do_repeat_find = true;
+                    }
+                    KeyCode::Char(',') => {
+                        do_repeat_find_reverse = true;
+                    }
+
                     _ => {
                         copy_state.reset_count();
                     }
@@ -696,6 +806,49 @@ impl App {
                                             cs.move_word_end(&line, big_word);
                                         }
                                     }
+                                }
+                                cs.reset_count();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Handle search operations
+            if do_search_next || do_search_prev {
+                if let Some(pane) = self.panes.focused() {
+                    if let Some(buffer) = self.buffers.get(&pane.id) {
+                        let get_line = |y: i32| get_line_content_static(buffer, y);
+                        if let Some(ref mut cs) = self.copy_mode {
+                            if do_search_next {
+                                cs.search_next(get_line);
+                            } else {
+                                cs.search_prev(get_line);
+                            }
+                            cs.reset_count();
+                        }
+                    }
+                }
+            }
+
+            // Handle find char start
+            if let Some((forward, inclusive)) = do_find_char {
+                if let Some(ref mut cs) = self.copy_mode {
+                    cs.start_find_char(forward, inclusive);
+                }
+            }
+
+            // Handle repeat find
+            if do_repeat_find || do_repeat_find_reverse {
+                if let Some(pane) = self.panes.focused() {
+                    if let Some(buffer) = self.buffers.get(&pane.id) {
+                        if let Some(ref copy_state) = self.copy_mode {
+                            let line = self.get_line_content(buffer, copy_state.cursor.y);
+                            if let Some(ref mut cs) = self.copy_mode {
+                                if do_repeat_find {
+                                    cs.repeat_find(&line);
+                                } else {
+                                    cs.repeat_find_reverse(&line);
                                 }
                                 cs.reset_count();
                             }
@@ -939,13 +1092,21 @@ impl App {
 
     /// Get line content from buffer at given buffer Y coordinate (negative = scrollback)
     fn get_line_content(&self, buffer: &ScreenBuffer, buffer_y: i32) -> Vec<char> {
-        let mut line = Vec::new();
-        for x in 0..buffer.width() {
-            let cell = buffer.get_at_scroll_offset(x, buffer_y);
-            line.push(cell.ch);
-        }
-        line
+        get_line_content_static(buffer, buffer_y)
     }
+}
+
+/// Static helper to get line content (avoids borrow issues in closures)
+fn get_line_content_static(buffer: &ScreenBuffer, buffer_y: i32) -> Vec<char> {
+    let mut line = Vec::new();
+    for x in 0..buffer.width() {
+        let cell = buffer.get_at_scroll_offset(x, buffer_y);
+        line.push(cell.ch);
+    }
+    line
+}
+
+impl App {
 
     /// Extract selected text from copy mode selection
     fn extract_copy_mode_selection(&self) -> Option<String> {
@@ -1166,14 +1327,23 @@ impl App {
         // Show copy mode indicator
         if let Some(ref copy_state) = self.copy_mode {
             queue!(stdout, SetForegroundColor(Color::Yellow), SetAttribute(Attribute::Bold))?;
-            let mode_str = match copy_state.visual_mode {
-                copy_mode::VisualMode::None => "COPY",
-                copy_mode::VisualMode::Char => "VISUAL",
-                copy_mode::VisualMode::Line => "V-LINE",
-            };
-            // Show count if set
-            let count_str = copy_state.count.map(|c| format!("{}", c)).unwrap_or_default();
-            write!(stdout, " [{}{}  {}/{}]", count_str, mode_str, copy_state.scroll_offset, copy_state.scrollback_len)?;
+
+            // Check for search input mode
+            if copy_state.search_mode != copy_mode::SearchMode::None {
+                let prompt = if copy_state.search_mode == copy_mode::SearchMode::Forward { "/" } else { "?" };
+                write!(stdout, " {}{}", prompt, copy_state.search_input)?;
+            } else if copy_state.pending_find.is_some() {
+                write!(stdout, " find:")?;
+            } else {
+                let mode_str = match copy_state.visual_mode {
+                    copy_mode::VisualMode::None => "COPY",
+                    copy_mode::VisualMode::Char => "VISUAL",
+                    copy_mode::VisualMode::Line => "V-LINE",
+                };
+                // Show count if set
+                let count_str = copy_state.count.map(|c| format!("{}", c)).unwrap_or_default();
+                write!(stdout, " [{}{}  {}/{}]", count_str, mode_str, copy_state.scroll_offset, copy_state.scrollback_len)?;
+            }
         }
 
         queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
