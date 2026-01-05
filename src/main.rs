@@ -678,67 +678,146 @@ fn run() -> Result<()> {
 
 /// Convert a crossterm KeyEvent to bytes to send to PTY
 fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
-    let mut bytes = Vec::new();
+    // Calculate xterm modifier code: 1 + (shift?1:0) + (alt?2:0) + (ctrl?4:0)
+    // Result: 2=Shift, 3=Alt, 4=Shift+Alt, 5=Ctrl, 6=Shift+Ctrl, 7=Alt+Ctrl, 8=all
+    let modifier = {
+        let mut m = 1u8;
+        if key.modifiers.contains(KeyModifiers::SHIFT) { m += 1; }
+        if key.modifiers.contains(KeyModifiers::ALT) { m += 2; }
+        if key.modifiers.contains(KeyModifiers::CONTROL) { m += 4; }
+        m
+    };
+    let has_modifier = modifier > 1;
 
     match key.code {
         KeyCode::Char(c) => {
+            let mut bytes = Vec::new();
+            // Alt adds ESC prefix
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                bytes.push(0x1b);
+            }
             if key.modifiers.contains(KeyModifiers::CONTROL) {
-                if c.is_ascii_lowercase() {
-                    bytes.push((c as u8) - b'a' + 1);
-                } else if c.is_ascii_uppercase() {
+                // Ctrl+letter produces control codes 1-26
+                if c.is_ascii_alphabetic() {
                     bytes.push((c.to_ascii_lowercase() as u8) - b'a' + 1);
                 } else {
                     match c {
-                        '[' => bytes.push(0x1b),
-                        '\\' => bytes.push(0x1c),
-                        ']' => bytes.push(0x1d),
-                        '^' => bytes.push(0x1e),
-                        '_' => bytes.push(0x1f),
+                        '[' | '3' => bytes.push(0x1b), // Ctrl+[ = ESC
+                        '\\' | '4' => bytes.push(0x1c),
+                        ']' | '5' => bytes.push(0x1d),
+                        '^' | '6' => bytes.push(0x1e),
+                        '_' | '7' => bytes.push(0x1f),
+                        '?' | '8' => bytes.push(0x7f), // Ctrl+? = DEL
+                        '@' | '2' => bytes.push(0x00), // Ctrl+@ = NUL
                         _ => bytes.extend(c.to_string().as_bytes()),
                     }
                 }
-            } else if key.modifiers.contains(KeyModifiers::ALT) {
-                bytes.push(0x1b);
-                bytes.extend(c.to_string().as_bytes());
             } else {
                 bytes.extend(c.to_string().as_bytes());
             }
+            bytes
         }
-        KeyCode::Enter => bytes.push(b'\r'),
-        KeyCode::Tab => bytes.push(b'\t'),
-        KeyCode::BackTab => bytes.extend(b"\x1b[Z"), // Shift+Tab
-        KeyCode::Backspace => bytes.push(0x7f),
-        KeyCode::Esc => bytes.push(0x1b),
-        KeyCode::Up => bytes.extend(b"\x1b[A"),
-        KeyCode::Down => bytes.extend(b"\x1b[B"),
-        KeyCode::Right => bytes.extend(b"\x1b[C"),
-        KeyCode::Left => bytes.extend(b"\x1b[D"),
-        KeyCode::Home => bytes.extend(b"\x1b[H"),
-        KeyCode::End => bytes.extend(b"\x1b[F"),
-        KeyCode::PageUp => bytes.extend(b"\x1b[5~"),
-        KeyCode::PageDown => bytes.extend(b"\x1b[6~"),
-        KeyCode::Insert => bytes.extend(b"\x1b[2~"),
-        KeyCode::Delete => bytes.extend(b"\x1b[3~"),
-        KeyCode::F(n) => {
-            let seq = match n {
-                1 => b"\x1bOP".to_vec(),
-                2 => b"\x1bOQ".to_vec(),
-                3 => b"\x1bOR".to_vec(),
-                4 => b"\x1bOS".to_vec(),
-                5 => b"\x1b[15~".to_vec(),
-                6 => b"\x1b[17~".to_vec(),
-                7 => b"\x1b[18~".to_vec(),
-                8 => b"\x1b[19~".to_vec(),
-                9 => b"\x1b[20~".to_vec(),
-                10 => b"\x1b[21~".to_vec(),
-                11 => b"\x1b[23~".to_vec(),
-                12 => b"\x1b[24~".to_vec(),
-                _ => Vec::new(),
-            };
-            bytes.extend(seq);
+        KeyCode::Enter => {
+            // Modifiers on Enter: some apps expect CSI sequences
+            if has_modifier {
+                format!("\x1b[13;{}u", modifier).into_bytes()
+            } else {
+                vec![b'\r']
+            }
         }
-        _ => {}
-    }
+        KeyCode::Tab => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                b"\x1b[9;5u".to_vec() // Ctrl+Tab
+            } else if key.modifiers.contains(KeyModifiers::ALT) {
+                b"\x1b[9;3u".to_vec() // Alt+Tab (if it reaches us)
+            } else {
+                vec![b'\t']
+            }
+        }
+        KeyCode::BackTab => b"\x1b[Z".to_vec(), // Shift+Tab
+        KeyCode::Backspace => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                vec![0x08] // Ctrl+Backspace: often BS (0x08) or delete word
+            } else if key.modifiers.contains(KeyModifiers::ALT) {
+                b"\x1b\x7f".to_vec() // Alt+Backspace
+            } else {
+                vec![0x7f]
+            }
+        }
+        KeyCode::Esc => {
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                b"\x1b\x1b".to_vec() // Alt+Esc
+            } else {
+                vec![0x1b]
+            }
+        }
 
-    bytes
+        // Navigation keys with modifier support (xterm format: CSI 1;modifier X)
+        KeyCode::Up => csi_with_modifier(b'A', modifier, has_modifier),
+        KeyCode::Down => csi_with_modifier(b'B', modifier, has_modifier),
+        KeyCode::Right => csi_with_modifier(b'C', modifier, has_modifier),
+        KeyCode::Left => csi_with_modifier(b'D', modifier, has_modifier),
+        KeyCode::Home => csi_with_modifier(b'H', modifier, has_modifier),
+        KeyCode::End => csi_with_modifier(b'F', modifier, has_modifier),
+
+        // Keys with ~ suffix use different format: CSI number;modifier ~
+        KeyCode::Insert => csi_tilde_with_modifier(2, modifier, has_modifier),
+        KeyCode::Delete => csi_tilde_with_modifier(3, modifier, has_modifier),
+        KeyCode::PageUp => csi_tilde_with_modifier(5, modifier, has_modifier),
+        KeyCode::PageDown => csi_tilde_with_modifier(6, modifier, has_modifier),
+
+        // Function keys
+        KeyCode::F(n) => f_key_sequence(n, modifier, has_modifier),
+
+        _ => Vec::new(),
+    }
+}
+
+/// Generate CSI sequence with optional modifier: CSI [1;modifier] final
+fn csi_with_modifier(final_byte: u8, modifier: u8, has_modifier: bool) -> Vec<u8> {
+    if has_modifier {
+        format!("\x1b[1;{}{}", modifier, final_byte as char).into_bytes()
+    } else {
+        vec![0x1b, b'[', final_byte]
+    }
+}
+
+/// Generate CSI number ~ sequence with optional modifier: CSI number[;modifier] ~
+fn csi_tilde_with_modifier(number: u8, modifier: u8, has_modifier: bool) -> Vec<u8> {
+    if has_modifier {
+        format!("\x1b[{};{}~", number, modifier).into_bytes()
+    } else {
+        format!("\x1b[{}~", number).into_bytes()
+    }
+}
+
+/// Generate function key sequence with optional modifier
+fn f_key_sequence(n: u8, modifier: u8, has_modifier: bool) -> Vec<u8> {
+    // F1-F4 use SS3 format (no modifier support in standard), F5+ use CSI format
+    match n {
+        1..=4 if !has_modifier => {
+            vec![0x1b, b'O', b'P' + n - 1] // ESC O P/Q/R/S
+        }
+        1..=4 => {
+            // With modifiers, F1-F4 use CSI format
+            let code = match n {
+                1 => 11, 2 => 12, 3 => 13, 4 => 14,
+                _ => return Vec::new(),
+            };
+            format!("\x1b[{};{}~", code, modifier).into_bytes()
+        }
+        5..=12 => {
+            let code = match n {
+                5 => 15, 6 => 17, 7 => 18, 8 => 19,
+                9 => 20, 10 => 21, 11 => 23, 12 => 24,
+                _ => return Vec::new(),
+            };
+            if has_modifier {
+                format!("\x1b[{};{}~", code, modifier).into_bytes()
+            } else {
+                format!("\x1b[{}~", code).into_bytes()
+            }
+        }
+        _ => Vec::new(),
+    }
 }

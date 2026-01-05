@@ -90,6 +90,8 @@ enum ParseState {
     Escape,
     Csi,
     Osc,
+    Dcs,           // Device Control String (ESC P ... ST)
+    CharsetSelect, // ESC ( X, ESC ) X - consume next byte
 }
 
 impl ScreenBuffer {
@@ -147,6 +149,8 @@ impl ScreenBuffer {
                 ParseState::Escape => self.process_escape(byte),
                 ParseState::Csi => self.process_csi(byte),
                 ParseState::Osc => self.process_osc(byte),
+                ParseState::Dcs => self.process_dcs(byte),
+                ParseState::CharsetSelect => self.process_charset_select(byte),
             }
         }
     }
@@ -238,6 +242,22 @@ impl ScreenBuffer {
                 self.parse_state = ParseState::Osc;
                 self.parse_buffer.clear();
             }
+            b'P' => {
+                // DCS - Device Control String
+                self.parse_state = ParseState::Dcs;
+                self.parse_buffer.clear();
+            }
+            b'_' | b'^' | b'X' => {
+                // APC, PM, SOS - consume until ST, treat like DCS
+                self.parse_state = ParseState::Dcs;
+                self.parse_buffer.clear();
+            }
+            b'(' | b')' | b'*' | b'+' => {
+                // Character set designation - next byte is the charset ID
+                // ESC ( B = G0 to ASCII, ESC ) 0 = G1 to DEC graphics, etc.
+                // We need to consume the next byte too
+                self.parse_state = ParseState::CharsetSelect;
+            }
             b'M' => {
                 // Reverse line feed
                 if self.cursor_y > 0 {
@@ -245,20 +265,86 @@ impl ScreenBuffer {
                 }
                 self.parse_state = ParseState::Normal;
             }
-            b'7' => {
-                // Save cursor (DECSC)
+            b'7' | b's' => {
+                // Save cursor (DECSC or ANSI)
                 self.saved_cursor = Some((self.cursor_x, self.cursor_y));
                 self.parse_state = ParseState::Normal;
             }
-            b'8' => {
-                // Restore cursor (DECRC)
+            b'8' | b'u' => {
+                // Restore cursor (DECRC or ANSI)
                 if let Some((x, y)) = self.saved_cursor {
                     self.cursor_x = x.min(self.width.saturating_sub(1));
                     self.cursor_y = y.min(self.height.saturating_sub(1));
                 }
                 self.parse_state = ParseState::Normal;
             }
+            b'\\' => {
+                // ST (String Terminator) - just return to normal
+                self.parse_state = ParseState::Normal;
+            }
+            b'c' => {
+                // RIS - Full Reset
+                self.erase_all();
+                self.cursor_x = 0;
+                self.cursor_y = 0;
+                self.current_fg = None;
+                self.current_bg = None;
+                self.current_attrs.reset();
+                self.parse_state = ParseState::Normal;
+            }
+            b'D' => {
+                // IND - Index (move down, scroll if needed)
+                self.line_feed();
+                self.parse_state = ParseState::Normal;
+            }
+            b'E' => {
+                // NEL - Next Line
+                self.cursor_x = 0;
+                self.line_feed();
+                self.parse_state = ParseState::Normal;
+            }
+            b'H' => {
+                // HTS - Horizontal Tab Set (ignore)
+                self.parse_state = ParseState::Normal;
+            }
+            b'=' | b'>' => {
+                // DECKPAM/DECKPNM - Keypad modes (ignore)
+                self.parse_state = ParseState::Normal;
+            }
             _ => {
+                self.parse_state = ParseState::Normal;
+            }
+        }
+    }
+
+    fn process_charset_select(&mut self, _byte: u8) {
+        // Just consume the charset identifier byte (B, 0, A, etc.)
+        // We don't actually change character sets, just ignore
+        self.parse_state = ParseState::Normal;
+    }
+
+    fn process_dcs(&mut self, byte: u8) {
+        // DCS sequences end with ST (ESC \) or BEL
+        if byte == 0x07 {
+            // BEL terminates
+            self.parse_state = ParseState::Normal;
+        } else if byte == 0x1b {
+            // Might be start of ST (ESC \)
+            self.parse_buffer.push(byte);
+        } else if !self.parse_buffer.is_empty() && *self.parse_buffer.last().unwrap() == 0x1b && byte == b'\\' {
+            // ST received, end DCS
+            self.parse_state = ParseState::Normal;
+        } else if byte == 0x9c {
+            // C1 ST
+            self.parse_state = ParseState::Normal;
+        } else {
+            // Consume but don't store (we ignore DCS content)
+            // Clear buffer if it wasn't an ESC
+            if !self.parse_buffer.is_empty() && *self.parse_buffer.last().unwrap() == 0x1b {
+                self.parse_buffer.clear();
+            }
+            // Safety limit
+            if self.parse_buffer.len() > 4096 {
                 self.parse_state = ParseState::Normal;
             }
         }
@@ -325,6 +411,15 @@ impl ScreenBuffer {
 
         let final_byte = *self.parse_buffer.last().unwrap();
         let params_str = String::from_utf8_lossy(&self.parse_buffer[..self.parse_buffer.len() - 1]);
+
+        // For SGR (m), we need special handling of colon sub-parameters
+        // For other sequences, just parse semicolon-separated values
+        if final_byte == b'm' {
+            let params_owned = params_str.to_string();
+            self.process_sgr_string(&params_owned);
+            return;
+        }
+
         let params: Vec<u16> = params_str
             .split(';')
             .filter_map(|s| s.parse().ok())
@@ -387,10 +482,6 @@ impl ScreenBuffer {
                 // Delete lines
                 let n = params.first().copied().unwrap_or(1).max(1) as usize;
                 self.delete_lines(n);
-            }
-            b'm' => {
-                // SGR - Select Graphic Rendition
-                self.process_sgr(&params);
             }
             b'r' => {
                 // Set scrolling region - ignore for now
@@ -551,6 +642,64 @@ impl ScreenBuffer {
         self.in_alternate_screen = false;
     }
 
+    /// Process SGR string with proper colon sub-parameter handling
+    fn process_sgr_string(&mut self, params_str: &str) {
+        if params_str.is_empty() {
+            // ESC[m = reset
+            self.current_fg = None;
+            self.current_bg = None;
+            self.current_attrs.reset();
+            return;
+        }
+
+        // Handle colon sub-parameters by converting to semicolons
+        // But special-case underline styles (4:N) to just set underline
+        let mut processed = String::with_capacity(params_str.len());
+        for segment in params_str.split(';') {
+            if !processed.is_empty() {
+                processed.push(';');
+            }
+
+            if segment.contains(':') {
+                // Has colon sub-parameters
+                let parts: Vec<&str> = segment.split(':').collect();
+                if let Some(first) = parts.first() {
+                    match *first {
+                        "4" => {
+                            // Underline style - check if disabling (4:0) or enabling
+                            if parts.get(1) == Some(&"0") {
+                                processed.push_str("24"); // Turn off underline
+                            } else {
+                                processed.push_str("4"); // Just enable underline
+                            }
+                        }
+                        "58" => {
+                            // Underline color - ignore entirely
+                        }
+                        "38" | "48" => {
+                            // Color with colon separator - convert to semicolon format
+                            processed.push_str(&parts.join(";"));
+                        }
+                        _ => {
+                            // Unknown - just use first part
+                            processed.push_str(first);
+                        }
+                    }
+                }
+            } else {
+                processed.push_str(segment);
+            }
+        }
+
+        // Now parse as normal semicolon-separated params
+        let params: Vec<u16> = processed
+            .split(';')
+            .filter_map(|s| s.parse().ok())
+            .collect();
+
+        self.process_sgr(&params);
+    }
+
     fn process_sgr(&mut self, params: &[u16]) {
         if params.is_empty() {
             // Reset all
@@ -573,7 +722,9 @@ impl ScreenBuffer {
                 2 => self.current_attrs.set(Attrs::DIM),
                 3 => self.current_attrs.set(Attrs::ITALIC),
                 4 => self.current_attrs.set(Attrs::UNDERLINE),
+                5 | 6 => {} // Blink - ignore
                 7 => self.current_attrs.set(Attrs::REVERSE),
+                8 => {} // Hidden/invisible - ignore
                 9 => self.current_attrs.set(Attrs::STRIKETHROUGH),
                 21 => self.current_attrs.clear(Attrs::BOLD), // Double underline or bold off
                 22 => {
