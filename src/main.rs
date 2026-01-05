@@ -9,7 +9,10 @@ mod tag;
 use anyhow::{Context, Result};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        self, Event, KeyCode, KeyEvent, KeyModifiers,
+        KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    },
     execute, queue,
     style::ResetColor,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen, SetTitle},
@@ -29,6 +32,7 @@ fn main() -> Result<()> {
     let result = run();
 
     // Cleanup
+    let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     let _ = terminal::disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen, ResetColor);
 
@@ -753,6 +757,13 @@ fn run() -> Result<()> {
     // Set up terminal
     terminal::enable_raw_mode().context("Failed to enable raw mode")?;
     execute!(io::stdout(), EnterAlternateScreen, SetTitle("truetm"))?;
+
+    // Enable Kitty keyboard protocol for unambiguous key handling (Alt+O etc.)
+    // This is supported by Kitty, Foot, WezTerm, Alacritty, and others
+    let _ = execute!(
+        io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
 
     // Frame timing - target ~60fps max, but render immediately if idle
     let frame_duration = Duration::from_micros(16667); // ~60fps
