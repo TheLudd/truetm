@@ -94,7 +94,7 @@ Scrollback stores up to 1000 lines of history per window.
 
 ## Configuration
 
-simplex follows the dwm philosophy: configuration is done at compile time by editing the source code. Key settings can be found in `src/main.rs`.
+simplex follows the dwm philosophy: configuration is done at compile time by editing `src/config.rs`. This file contains all keybindings and settings in a readable format.
 
 ## License
 MIT

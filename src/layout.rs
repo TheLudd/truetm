@@ -1,5 +1,6 @@
 //! Layout management - arranging panes in the terminal
 
+use crate::config;
 use crate::pane::{PaneId, Rect};
 
 /// Configuration for layouts
@@ -11,7 +12,7 @@ pub struct LayoutConfig {
 
 impl Default for LayoutConfig {
     fn default() -> Self {
-        Self { master_ratio: 0.55 }
+        Self { master_ratio: config::MASTER_RATIO }
     }
 }
 
@@ -105,6 +106,7 @@ impl LayoutManager {
     }
 
     /// Switch to the next layout
+    #[allow(dead_code)]
     pub fn next(&mut self) {
         self.current = (self.current + 1) % self.layouts.len();
     }

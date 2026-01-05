@@ -1,5 +1,6 @@
 //! Rendering - screen buffers and compositor
 
+use crate::config;
 use crate::pane::Rect;
 use crossterm::{
     cursor::MoveTo,
@@ -58,7 +59,7 @@ impl Default for Cell {
 }
 
 /// Default scrollback buffer size (number of lines)
-const DEFAULT_SCROLLBACK: usize = 1000;
+const DEFAULT_SCROLLBACK: usize = config::SCROLLBACK_LINES;
 
 /// Screen buffer for a pane - stores the current display state
 pub struct ScreenBuffer {

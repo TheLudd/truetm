@@ -1,5 +1,6 @@
 //! dvtr - A truecolor-enabled terminal multiplexer inspired by dvtm
 
+mod config;
 mod layout;
 mod pane;
 mod render;
@@ -283,11 +284,11 @@ impl App {
 
     /// Handle keyboard input
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
-        // Check for prefix key: Ctrl+B
+        // Check for prefix key
         if !self.prefix_mode
             && self.pending_command.is_none()
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.code == KeyCode::Char('b')
+            && key.modifiers.contains(config::PREFIX_MODIFIERS)
+            && key.code == config::PREFIX_KEY
         {
             self.prefix_mode = true;
             return Ok(());
@@ -367,79 +368,64 @@ impl App {
             }
 
             match key.code {
-                KeyCode::Char('q') => {
+                k if k == config::KEY_QUIT => {
                     self.running = false;
                 }
-                KeyCode::Char('c') => {
-                    // Create new pane
+                k if k == config::KEY_NEW_WINDOW => {
                     self.create_pane()?;
                 }
-                KeyCode::Char('x') => {
-                    // Close focused pane
+                k if k == config::KEY_CLOSE_WINDOW => {
                     self.close_focused_pane();
                     if self.panes.is_empty() {
                         self.running = false;
                     }
                 }
-                KeyCode::Char('j') => {
-                    // Focus next (within current view)
+                k if k == config::KEY_FOCUS_NEXT => {
                     self.panes.focus_next_in_view(self.current_view);
                     self.needs_redraw = true;
                 }
-                KeyCode::Char('k') => {
-                    // Focus previous (within current view)
+                k if k == config::KEY_FOCUS_PREV => {
                     self.panes.focus_prev_in_view(self.current_view);
                     self.needs_redraw = true;
                 }
-                KeyCode::Char(' ') => {
-                    // Next layout
-                    self.layout.next();
+                k if k == config::KEY_MASTER_SHRINK => {
+                    self.layout.adjust_master(-config::MASTER_ADJUST_STEP);
                     self.apply_layout()?;
                     self.needs_redraw = true;
                 }
-                KeyCode::Char('h') => {
-                    // Decrease master size
-                    self.layout.adjust_master(-0.05);
+                k if k == config::KEY_MASTER_GROW => {
+                    self.layout.adjust_master(config::MASTER_ADJUST_STEP);
                     self.apply_layout()?;
                     self.needs_redraw = true;
                 }
-                KeyCode::Char('l') => {
-                    // Increase master size
-                    self.layout.adjust_master(0.05);
-                    self.apply_layout()?;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Char('b') => {
-                    // Send literal Ctrl+B
-                    if let Some(pane) = self.panes.focused_mut() {
-                        pane.write(&[0x02])?;
+                k if k == config::PREFIX_KEY => {
+                    // Send literal prefix key (Ctrl+letter = letter - 'a' + 1)
+                    if let KeyCode::Char(c) = config::PREFIX_KEY {
+                        let ctrl_byte = (c.to_ascii_lowercase() as u8) - b'a' + 1;
+                        if let Some(pane) = self.panes.focused_mut() {
+                            pane.write(&[ctrl_byte])?;
+                        }
                     }
                 }
-                KeyCode::Enter => {
-                    // Swap focused pane with master
+                k if k == config::KEY_SWAP_MASTER => {
                     self.panes.swap_with_master(self.current_view);
                     self.apply_layout()?;
                     self.needs_redraw = true;
                 }
-                KeyCode::Char('v') => {
-                    // View tag: wait for number
+                k if k == config::KEY_VIEW_TAG => {
                     self.pending_command = Some(PendingCommand::ViewTag);
                 }
-                KeyCode::Char('t') => {
-                    // Set tag: wait for number
+                k if k == config::KEY_SET_TAG => {
                     self.pending_command = Some(PendingCommand::SetTag);
                 }
-                KeyCode::Char('T') => {
-                    // Toggle tag: wait for number
+                k if k == config::KEY_TOGGLE_TAG => {
                     self.pending_command = Some(PendingCommand::ToggleTag);
                 }
-                KeyCode::Char('a') => {
-                    // Toggle broadcast mode
+                k if k == config::KEY_TOGGLE_BROADCAST => {
                     self.broadcast_mode = !self.broadcast_mode;
                     self.needs_redraw = true;
                 }
-                KeyCode::Char('[') => {
-                    // Enter scroll mode
+                k if k == config::KEY_ENTER_SCROLL => {
                     self.scroll_mode = true;
                     self.scroll_offset = 0;
                     self.compositor.invalidate();
@@ -453,23 +439,20 @@ impl App {
         // Handle scroll mode
         if self.scroll_mode {
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => {
-                    // Exit scroll mode
+                k if k == config::SCROLL_EXIT_1 || k == config::SCROLL_EXIT_2 => {
                     self.scroll_mode = false;
                     self.scroll_offset = 0;
                     self.compositor.invalidate();
                     self.needs_redraw = true;
                 }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    // Scroll down (towards current, reduce offset)
+                k if k == config::SCROLL_DOWN_LINE_1 || k == config::SCROLL_DOWN_LINE_2 => {
                     if self.scroll_offset > 0 {
                         self.scroll_offset -= 1;
                         self.compositor.invalidate();
                         self.needs_redraw = true;
                     }
                 }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    // Scroll up (into scrollback, increase offset)
+                k if k == config::SCROLL_UP_LINE_1 || k == config::SCROLL_UP_LINE_2 => {
                     if let Some(pane) = self.panes.focused() {
                         if let Some(buffer) = self.buffers.get(&pane.id) {
                             let max_offset = buffer.scrollback_len();
@@ -481,8 +464,7 @@ impl App {
                         }
                     }
                 }
-                KeyCode::PageUp => {
-                    // Scroll up by half screen
+                k if k == config::SCROLL_UP_PAGE => {
                     if let Some(pane) = self.panes.focused() {
                         if let Some(buffer) = self.buffers.get(&pane.id) {
                             let max_offset = buffer.scrollback_len();
@@ -493,8 +475,7 @@ impl App {
                         }
                     }
                 }
-                KeyCode::PageDown => {
-                    // Scroll down by half screen
+                k if k == config::SCROLL_DOWN_PAGE => {
                     if let Some(pane) = self.panes.focused() {
                         if let Some(buffer) = self.buffers.get(&pane.id) {
                             let page_size = (buffer.height() / 2).max(1) as usize;
@@ -504,8 +485,7 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Char('g') => {
-                    // Go to top of scrollback
+                k if k == config::SCROLL_TO_TOP => {
                     if let Some(pane) = self.panes.focused() {
                         if let Some(buffer) = self.buffers.get(&pane.id) {
                             self.scroll_offset = buffer.scrollback_len();
@@ -514,8 +494,7 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Char('G') => {
-                    // Go to bottom (live view)
+                k if k == config::SCROLL_TO_BOTTOM => {
                     self.scroll_offset = 0;
                     self.compositor.invalidate();
                     self.needs_redraw = true;
