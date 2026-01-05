@@ -86,6 +86,7 @@ pub struct CopyModeState {
     pub buffer_height: u16,   // Visible buffer height
     pub buffer_width: u16,    // Buffer width
     pub scrollback_len: usize, // Total scrollback lines available
+    pub count: Option<u32>,   // Numeric prefix for motions (e.g., 5j)
 }
 
 impl CopyModeState {
@@ -99,7 +100,26 @@ impl CopyModeState {
             buffer_height,
             buffer_width,
             scrollback_len,
+            count: None,
         }
+    }
+
+    /// Get the current count (default 1 if not set)
+    pub fn get_count(&self) -> u32 {
+        self.count.unwrap_or(1)
+    }
+
+    /// Add a digit to the count
+    pub fn push_count_digit(&mut self, digit: u32) {
+        let current = self.count.unwrap_or(0);
+        // Limit to reasonable size to prevent overflow
+        let new_count = current.saturating_mul(10).saturating_add(digit).min(99999);
+        self.count = Some(new_count);
+    }
+
+    /// Reset the count after executing a motion
+    pub fn reset_count(&mut self) {
+        self.count = None;
     }
 
     /// Update buffer dimensions (on resize)

@@ -535,29 +535,52 @@ impl App {
             let mut do_word_motion: Option<(bool, bool, bool)> = None; // (forward, end, big_word)
 
             if let Some(ref mut copy_state) = self.copy_mode {
+                let count = copy_state.get_count();
+
                 match key.code {
                     // Exit: q or Esc
                     k if k == config::COPY_EXIT_1 || k == config::COPY_EXIT_2 => {
                         exit_copy_mode = true;
                     }
 
-                    // Basic movement: hjkl
-                    KeyCode::Char('h') | KeyCode::Left => {
-                        copy_state.move_left();
+                    // Numeric prefix (1-9 start, 0 continues if count started)
+                    KeyCode::Char(c @ '1'..='9') => {
+                        copy_state.push_count_digit(c.to_digit(10).unwrap());
                     }
-                    KeyCode::Char('l') | KeyCode::Right => {
-                        copy_state.move_right();
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        copy_state.move_up();
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        copy_state.move_down();
+                    KeyCode::Char('0') if copy_state.count.is_some() => {
+                        copy_state.push_count_digit(0);
                     }
 
-                    // Line navigation: 0, $, ^
+                    // Basic movement: hjkl (with count)
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        for _ in 0..count {
+                            copy_state.move_left();
+                        }
+                        copy_state.reset_count();
+                    }
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        for _ in 0..count {
+                            copy_state.move_right();
+                        }
+                        copy_state.reset_count();
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        for _ in 0..count {
+                            copy_state.move_up();
+                        }
+                        copy_state.reset_count();
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        for _ in 0..count {
+                            copy_state.move_down();
+                        }
+                        copy_state.reset_count();
+                    }
+
+                    // Line navigation: 0 (when no count), $, ^
                     KeyCode::Char('0') => {
                         copy_state.move_to_line_start();
+                        copy_state.reset_count();
                     }
                     KeyCode::Char('$') => {
                         do_line_end = true;
@@ -566,7 +589,7 @@ impl App {
                         do_first_non_blank = true;
                     }
 
-                    // Word motions: w, W, b, B, e, E
+                    // Word motions: w, W, b, B, e, E (with count)
                     KeyCode::Char('w') => {
                         do_word_motion = Some((true, false, false)); // forward, not end, small word
                     }
@@ -589,36 +612,49 @@ impl App {
                     // Buffer navigation: gg, G
                     KeyCode::Char('g') => {
                         copy_state.move_to_top();
+                        copy_state.reset_count();
                     }
                     KeyCode::Char('G') => {
                         copy_state.move_to_bottom();
+                        copy_state.reset_count();
                     }
 
                     // Screen navigation: H, M, L
                     KeyCode::Char('H') => {
                         copy_state.move_to_screen_top();
+                        copy_state.reset_count();
                     }
                     KeyCode::Char('M') => {
                         copy_state.move_to_screen_middle();
+                        copy_state.reset_count();
                     }
                     KeyCode::Char('L') => {
                         copy_state.move_to_screen_bottom();
+                        copy_state.reset_count();
                     }
 
                     // Page navigation
                     KeyCode::PageUp => {
-                        copy_state.page_up();
+                        for _ in 0..count {
+                            copy_state.page_up();
+                        }
+                        copy_state.reset_count();
                     }
                     KeyCode::PageDown => {
-                        copy_state.page_down();
+                        for _ in 0..count {
+                            copy_state.page_down();
+                        }
+                        copy_state.reset_count();
                     }
 
                     // Visual modes
                     KeyCode::Char('v') => {
                         copy_state.toggle_visual_char();
+                        copy_state.reset_count();
                     }
                     KeyCode::Char('V') => {
                         copy_state.toggle_visual_line();
+                        copy_state.reset_count();
                     }
 
                     // Yank
@@ -626,9 +662,12 @@ impl App {
                         if copy_state.visual_mode != copy_mode::VisualMode::None {
                             yank_selection = true;
                         }
+                        copy_state.reset_count();
                     }
 
-                    _ => {}
+                    _ => {
+                        copy_state.reset_count();
+                    }
                 }
             }
 
@@ -637,21 +676,28 @@ impl App {
                 if let Some(pane) = self.panes.focused() {
                     if let Some(buffer) = self.buffers.get(&pane.id) {
                         if let Some(ref copy_state) = self.copy_mode {
-                            let line = self.get_line_content(buffer, copy_state.cursor.y);
+                            let count = copy_state.get_count();
+                            let cursor_y = copy_state.cursor.y;
+                            let line = self.get_line_content(buffer, cursor_y);
                             if let Some(ref mut cs) = self.copy_mode {
                                 if do_line_end {
                                     cs.move_to_line_end(&line);
                                 } else if do_first_non_blank {
                                     cs.move_to_first_non_blank(&line);
                                 } else if let Some((forward, end, big_word)) = do_word_motion {
-                                    if forward && !end {
-                                        cs.move_word_forward(&line, big_word);
-                                    } else if !forward {
-                                        cs.move_word_backward(&line, big_word);
-                                    } else {
-                                        cs.move_word_end(&line, big_word);
+                                    for _ in 0..count {
+                                        // Re-fetch line content in case cursor moved to different line
+                                        // (word motions currently stay on same line, but be safe)
+                                        if forward && !end {
+                                            cs.move_word_forward(&line, big_word);
+                                        } else if !forward {
+                                            cs.move_word_backward(&line, big_word);
+                                        } else {
+                                            cs.move_word_end(&line, big_word);
+                                        }
                                     }
                                 }
+                                cs.reset_count();
                             }
                         }
                     }
@@ -1125,7 +1171,9 @@ impl App {
                 copy_mode::VisualMode::Char => "VISUAL",
                 copy_mode::VisualMode::Line => "V-LINE",
             };
-            write!(stdout, " [{}  {}/{}]", mode_str, copy_state.scroll_offset, copy_state.scrollback_len)?;
+            // Show count if set
+            let count_str = copy_state.count.map(|c| format!("{}", c)).unwrap_or_default();
+            write!(stdout, " [{}{}  {}/{}]", count_str, mode_str, copy_state.scroll_offset, copy_state.scrollback_len)?;
         }
 
         queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
