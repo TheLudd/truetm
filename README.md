@@ -10,21 +10,33 @@ A terminal multiplexer inspired by [dvtm](https://www.brain-dump.org/projects/dv
 
 ## Installation
 
+### Requirements
+
+- Rust 1.70+ and Cargo
+- A C compiler (gcc or clang)
+
+On Debian/Ubuntu:
+```sh
+apt install build-essential
+```
+
+On Arch:
+```sh
+pacman -S base-devel
+```
+
+On macOS, install Xcode Command Line Tools:
+```sh
+xcode-select --install
+```
+
 ### From source
 
 ```sh
-git clone https://github.com/yourusername/simplex
+git clone https://github.com/theludd/simplex
 cd simplex
-make
-sudo make install
-```
-
-Or manually:
-
-```sh
 cargo build --release
 sudo cp target/release/simplex /usr/local/bin/
-sudo cp simplex.1 /usr/local/share/man/man1/  # optional: install man page
 ```
 
 ## Usage
@@ -80,18 +92,10 @@ Tags work like virtual desktops but more flexible:
 
 Scrollback stores up to 1000 lines of history per window.
 
-## Building
-
-Requires Rust 1.70+
-
-```sh
-cargo build --release
-```
-
 ## Configuration
 
 simplex follows the dwm philosophy: configuration is done at compile time by editing the source code. Key settings can be found in `src/main.rs`.
 
 ## License
-
 MIT
+
