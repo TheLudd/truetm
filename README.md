@@ -65,6 +65,21 @@ Tags work like virtual desktops but more flexible:
 - A window can have multiple tags (appear in multiple views)
 - Closing the last window in a tag returns to the previously visited tag
 
+### Scrollback
+
+| Key           | Action                         |
+| ------------- | ------------------------------ |
+| `Ctrl+B [`    | Enter scroll mode              |
+| `k` / `Up`    | Scroll up one line             |
+| `j` / `Down`  | Scroll down one line           |
+| `PgUp`        | Scroll up half page            |
+| `PgDown`      | Scroll down half page          |
+| `g`           | Go to top of scrollback        |
+| `G`           | Go to bottom (live view)       |
+| `q` / `Esc`   | Exit scroll mode               |
+
+Scrollback stores up to 1000 lines of history per window.
+
 ## Building
 
 Requires Rust 1.70+

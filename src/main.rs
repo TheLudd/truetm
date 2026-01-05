@@ -65,6 +65,9 @@ struct App {
     tag_history: Vec<u8>,
     // Broadcast mode - send input to all visible panes
     broadcast_mode: bool,
+    // Scroll mode - viewing scrollback
+    scroll_mode: bool,
+    scroll_offset: usize,
 }
 
 impl App {
@@ -105,6 +108,8 @@ impl App {
             tag_count: 9,
             tag_history: vec![0], // Start with tag 0 in history
             broadcast_mode: false,
+            scroll_mode: false,
+            scroll_offset: 0,
         }
     }
 
@@ -428,6 +433,88 @@ impl App {
                     self.broadcast_mode = !self.broadcast_mode;
                     self.needs_redraw = true;
                 }
+                KeyCode::Char('[') => {
+                    // Enter scroll mode
+                    self.scroll_mode = true;
+                    self.scroll_offset = 0;
+                    self.compositor.invalidate();
+                    self.needs_redraw = true;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        // Handle scroll mode
+        if self.scroll_mode {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    // Exit scroll mode
+                    self.scroll_mode = false;
+                    self.scroll_offset = 0;
+                    self.compositor.invalidate();
+                    self.needs_redraw = true;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    // Scroll down (towards current, reduce offset)
+                    if self.scroll_offset > 0 {
+                        self.scroll_offset -= 1;
+                        self.compositor.invalidate();
+                        self.needs_redraw = true;
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    // Scroll up (into scrollback, increase offset)
+                    if let Some(pane) = self.panes.focused() {
+                        if let Some(buffer) = self.buffers.get(&pane.id) {
+                            let max_offset = buffer.scrollback_len();
+                            if self.scroll_offset < max_offset {
+                                self.scroll_offset += 1;
+                                self.compositor.invalidate();
+                                self.needs_redraw = true;
+                            }
+                        }
+                    }
+                }
+                KeyCode::PageUp => {
+                    // Scroll up by half screen
+                    if let Some(pane) = self.panes.focused() {
+                        if let Some(buffer) = self.buffers.get(&pane.id) {
+                            let max_offset = buffer.scrollback_len();
+                            let page_size = (buffer.height() / 2).max(1) as usize;
+                            self.scroll_offset = (self.scroll_offset + page_size).min(max_offset);
+                            self.compositor.invalidate();
+                            self.needs_redraw = true;
+                        }
+                    }
+                }
+                KeyCode::PageDown => {
+                    // Scroll down by half screen
+                    if let Some(pane) = self.panes.focused() {
+                        if let Some(buffer) = self.buffers.get(&pane.id) {
+                            let page_size = (buffer.height() / 2).max(1) as usize;
+                            self.scroll_offset = self.scroll_offset.saturating_sub(page_size);
+                            self.compositor.invalidate();
+                            self.needs_redraw = true;
+                        }
+                    }
+                }
+                KeyCode::Char('g') => {
+                    // Go to top of scrollback
+                    if let Some(pane) = self.panes.focused() {
+                        if let Some(buffer) = self.buffers.get(&pane.id) {
+                            self.scroll_offset = buffer.scrollback_len();
+                            self.compositor.invalidate();
+                            self.needs_redraw = true;
+                        }
+                    }
+                }
+                KeyCode::Char('G') => {
+                    // Go to bottom (live view)
+                    self.scroll_offset = 0;
+                    self.compositor.invalidate();
+                    self.needs_redraw = true;
+                }
                 _ => {}
             }
             return Ok(());
@@ -485,7 +572,9 @@ impl App {
                         pane.rect.width,
                         pane.rect.height.saturating_sub(1),
                     );
-                    self.compositor.render_pane(&mut stdout, buffer, content_rect, is_focused)?;
+                    // Only apply scroll offset to focused pane in scroll mode
+                    let offset = if self.scroll_mode && is_focused { self.scroll_offset } else { 0 };
+                    self.compositor.render_pane(&mut stdout, buffer, content_rect, is_focused, offset)?;
                     // Draw window header with number and title
                     self.draw_window_header(&mut stdout, pane.rect, win_num + 1, buffer.title(), is_focused)?;
                 }
@@ -514,19 +603,22 @@ impl App {
         self.render_status_bar(&mut stdout)?;
 
         // Position cursor in focused pane (if visible and has size)
-        if let Some(pane) = self.panes.focused() {
-            if visible_ids.contains(&pane.id) && pane.rect.width > 0 && pane.rect.height > 0 {
-                if let Some(buffer) = self.buffers.get(&pane.id) {
-                    let (cx, cy) = buffer.cursor();
-                    // Clamp cursor to content area bounds
-                    let content_height = pane.rect.height.saturating_sub(1);
-                    let clamped_cx = cx.min(pane.rect.width.saturating_sub(1));
-                    let clamped_cy = cy.min(content_height.saturating_sub(1));
-                    // +1 to account for header row
-                    queue!(stdout, MoveTo(pane.rect.x + clamped_cx, pane.rect.y + 1 + clamped_cy))?;
-                    // Only show cursor if the application wants it visible
-                    if buffer.cursor_visible() {
-                        queue!(stdout, Show)?;
+        // Don't show cursor in scroll mode since we're viewing history
+        if !self.scroll_mode {
+            if let Some(pane) = self.panes.focused() {
+                if visible_ids.contains(&pane.id) && pane.rect.width > 0 && pane.rect.height > 0 {
+                    if let Some(buffer) = self.buffers.get(&pane.id) {
+                        let (cx, cy) = buffer.cursor();
+                        // Clamp cursor to content area bounds
+                        let content_height = pane.rect.height.saturating_sub(1);
+                        let clamped_cx = cx.min(pane.rect.width.saturating_sub(1));
+                        let clamped_cy = cy.min(content_height.saturating_sub(1));
+                        // +1 to account for header row
+                        queue!(stdout, MoveTo(pane.rect.x + clamped_cx, pane.rect.y + 1 + clamped_cy))?;
+                        // Only show cursor if the application wants it visible
+                        if buffer.cursor_visible() {
+                            queue!(stdout, Show)?;
+                        }
                     }
                 }
             }
@@ -583,6 +675,19 @@ impl App {
         // Show layout name
         queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         write!(stdout, "{}", self.layout.current_name())?;
+
+        // Show scroll mode indicator
+        if self.scroll_mode {
+            queue!(stdout, SetForegroundColor(Color::Yellow), SetAttribute(Attribute::Bold))?;
+            if let Some(pane) = self.panes.focused() {
+                if let Some(buffer) = self.buffers.get(&pane.id) {
+                    let total = buffer.scrollback_len();
+                    write!(stdout, " [SCROLL {}/{}]", self.scroll_offset, total)?;
+                }
+            } else {
+                write!(stdout, " [SCROLL]")?;
+            }
+        }
 
         queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
 

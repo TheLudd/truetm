@@ -57,6 +57,9 @@ impl Default for Cell {
     }
 }
 
+/// Default scrollback buffer size (number of lines)
+const DEFAULT_SCROLLBACK: usize = 1000;
+
 /// Screen buffer for a pane - stores the current display state
 pub struct ScreenBuffer {
     cells: Vec<Cell>,
@@ -85,6 +88,9 @@ pub struct ScreenBuffer {
     // Scroll region (top and bottom line, 0-indexed, inclusive)
     scroll_top: u16,
     scroll_bottom: u16,
+    // Scrollback buffer - lines that scrolled off the top
+    scrollback: std::collections::VecDeque<Vec<Cell>>,
+    scrollback_limit: usize,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -119,6 +125,8 @@ impl ScreenBuffer {
             cursor_visible: true,
             scroll_top: 0,
             scroll_bottom: height.saturating_sub(1),
+            scrollback: std::collections::VecDeque::new(),
+            scrollback_limit: DEFAULT_SCROLLBACK,
         }
     }
 
@@ -843,6 +851,19 @@ impl ScreenBuffer {
         let top = self.scroll_top as usize;
         let bottom = self.scroll_bottom as usize;
 
+        // Save top line to scrollback if scrolling from top and not in alternate screen
+        if top == 0 && !self.in_alternate_screen {
+            let mut line = Vec::with_capacity(width);
+            for x in 0..width {
+                line.push(self.cells[x]);
+            }
+            self.scrollback.push_back(line);
+            // Trim scrollback if over limit
+            while self.scrollback.len() > self.scrollback_limit {
+                self.scrollback.pop_front();
+            }
+        }
+
         // Move lines up within scroll region
         for y in top..bottom {
             let src = (y + 1) * width;
@@ -1025,6 +1046,50 @@ impl ScreenBuffer {
     pub fn cursor_visible(&self) -> bool {
         self.cursor_visible
     }
+
+    /// Get number of lines in scrollback buffer
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback.len()
+    }
+
+    /// Get a cell with scroll offset (for viewing scrollback)
+    /// scroll_offset is how many lines back from current view (0 = live view)
+    pub fn get_scrolled(&self, x: u16, y: u16, scroll_offset: usize) -> Cell {
+        if scroll_offset == 0 {
+            // Live view - use current cells
+            return self.get(x, y);
+        }
+
+        let height = self.height as usize;
+        let scrollback_len = self.scrollback.len();
+
+        // Calculate which line we're looking at
+        // scroll_offset lines back means: the visible screen is scrolled up
+        // So the top of the screen shows scrollback[scrollback_len - scroll_offset]
+        let y = y as usize;
+        let x = x as usize;
+
+        if y < scroll_offset && scroll_offset <= scrollback_len {
+            // This row is in the scrollback buffer
+            let scrollback_idx = scrollback_len - scroll_offset + y;
+            if let Some(line) = self.scrollback.get(scrollback_idx) {
+                if x < line.len() {
+                    return line[x];
+                }
+            }
+            Cell::default()
+        } else if y >= scroll_offset {
+            // This row is in the current screen buffer
+            let screen_y = y - scroll_offset;
+            if screen_y < height {
+                return self.get(x as u16, screen_y as u16);
+            }
+            Cell::default()
+        } else {
+            // Scrolled past the beginning of scrollback
+            Cell::default()
+        }
+    }
 }
 
 fn ansi_to_color(n: u16) -> Color {
@@ -1109,6 +1174,7 @@ impl Compositor {
         buffer: &ScreenBuffer,
         rect: Rect,
         focused: bool,
+        scroll_offset: usize,
     ) -> std::io::Result<()> {
         use crossterm::style::{Attribute, SetAttribute};
 
@@ -1123,7 +1189,7 @@ impl Compositor {
 
             for x in 0..rect.width.min(buffer.width()) {
                 let screen_x = rect.x + x;
-                let cell = buffer.get(x, y);
+                let cell = buffer.get_scrolled(x, y, scroll_offset);
 
                 // Check if this cell needs updating
                 let screen_idx = (screen_y as usize) * (self.width as usize) + (screen_x as usize);
