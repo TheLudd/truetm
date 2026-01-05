@@ -646,6 +646,9 @@ impl App {
         write!(stdout, "{:width$}", "", width = self.width as usize)?;
         queue!(stdout, MoveTo(0, status_y))?;
 
+        // Initial padding
+        write!(stdout, " ")?;
+
         // Render only tags that have panes or are currently viewed
         for tag in 0..self.tag_count {
             let has_panes = self.panes.any_with_tag(tag);
@@ -660,21 +663,21 @@ impl App {
                 .map(|p| p.tags.contains(tag))
                 .unwrap_or(false);
 
-            // Style based on state - green theme
+            // Style based on state - muted green theme
             if is_viewed && is_focused_tag {
-                // Viewed and focused pane has this tag - bright green bold
-                queue!(stdout, SetForegroundColor(Color::Green), SetAttribute(Attribute::Bold))?;
+                // Viewed and focused pane has this tag - brighter green bold
+                queue!(stdout, SetForegroundColor(Color::Rgb { r: 120, g: 190, b: 120 }), SetAttribute(Attribute::Bold))?;
             } else if is_viewed {
-                // Currently viewing this tag - green
-                queue!(stdout, SetForegroundColor(Color::Green))?;
+                // Currently viewing this tag - muted green
+                queue!(stdout, SetForegroundColor(Color::Rgb { r: 80, g: 150, b: 80 }))?;
             } else {
-                // Has panes but not viewing - dark green
-                queue!(stdout, SetForegroundColor(Color::DarkGreen))?;
+                // Has panes but not viewing - dim green
+                queue!(stdout, SetForegroundColor(Color::Rgb { r: 60, g: 100, b: 60 }))?;
             }
 
-            write!(stdout, "[{}]", tag + 1)?;
+            write!(stdout, "{}", tag + 1)?;
             queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
-            write!(stdout, " ")?;
+            write!(stdout, "  ")?;
         }
 
         // Show layout name
@@ -706,7 +709,7 @@ impl App {
         queue!(stdout, MoveTo(rect.x, rect.y))?;
 
         if is_focused {
-            queue!(stdout, SetForegroundColor(Color::Green), SetAttribute(Attribute::Bold))?;
+            queue!(stdout, SetForegroundColor(Color::Rgb { r: 120, g: 190, b: 120 }), SetAttribute(Attribute::Bold))?;
         } else {
             queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
         }
