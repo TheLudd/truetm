@@ -853,30 +853,26 @@ impl ScreenBuffer {
 
         // Save top line to scrollback if scrolling from top and not in alternate screen
         if top == 0 && !self.in_alternate_screen {
-            let mut line = Vec::with_capacity(width);
-            for x in 0..width {
-                line.push(self.cells[x]);
-            }
+            // Use slice copy for efficiency
+            let line = self.cells[0..width].to_vec();
             self.scrollback.push_back(line);
             // Trim scrollback if over limit
-            while self.scrollback.len() > self.scrollback_limit {
+            if self.scrollback.len() > self.scrollback_limit {
                 self.scrollback.pop_front();
             }
         }
 
-        // Move lines up within scroll region
-        for y in top..bottom {
-            let src = (y + 1) * width;
-            let dst = y * width;
-            for x in 0..width {
-                self.cells[dst + x] = self.cells[src + x];
-            }
-        }
+        // Move lines up within scroll region using copy_within for efficiency
+        let src_start = (top + 1) * width;
+        let src_end = (bottom + 1) * width;
+        let dst_start = top * width;
+        self.cells.copy_within(src_start..src_end, dst_start);
+
         // Clear bottom line of scroll region
         let blank = self.blank_cell();
         let last_row = bottom * width;
-        for x in 0..width {
-            self.cells[last_row + x] = blank;
+        for cell in &mut self.cells[last_row..last_row + width] {
+            *cell = blank;
         }
     }
 
@@ -886,19 +882,18 @@ impl ScreenBuffer {
         let top = self.scroll_top as usize;
         let bottom = self.scroll_bottom as usize;
 
-        // Move lines down within scroll region
+        // Move lines down within scroll region (must go in reverse to avoid overwriting)
+        // copy_within doesn't work here because regions overlap in the wrong direction
         for y in (top + 1..=bottom).rev() {
             let src = (y - 1) * width;
             let dst = y * width;
-            for x in 0..width {
-                self.cells[dst + x] = self.cells[src + x];
-            }
+            self.cells.copy_within(src..src + width, dst);
         }
         // Clear top line of scroll region
         let blank = self.blank_cell();
         let first_row = top * width;
-        for x in 0..width {
-            self.cells[first_row + x] = blank;
+        for cell in &mut self.cells[first_row..first_row + width] {
+            *cell = blank;
         }
     }
 
@@ -912,17 +907,18 @@ impl ScreenBuffer {
             return;
         }
 
-        // Move lines down within scroll region
+        // Move lines down within scroll region (reverse order to avoid overwriting)
         for row in (y..=bottom.saturating_sub(n)).rev() {
-            for x in 0..width {
-                self.cells[(row + n) * width + x] = self.cells[row * width + x];
-            }
+            let src = row * width;
+            let dst = (row + n) * width;
+            self.cells.copy_within(src..src + width, dst);
         }
         // Clear inserted lines
         let blank = self.blank_cell();
         for row in y..(y + n).min(bottom + 1) {
-            for x in 0..width {
-                self.cells[row * width + x] = blank;
+            let start = row * width;
+            for cell in &mut self.cells[start..start + width] {
+                *cell = blank;
             }
         }
     }
@@ -937,17 +933,20 @@ impl ScreenBuffer {
             return;
         }
 
-        // Move lines up within scroll region
-        for row in y..=bottom.saturating_sub(n) {
-            for x in 0..width {
-                self.cells[row * width + x] = self.cells[(row + n) * width + x];
-            }
+        // Move lines up within scroll region using copy_within
+        let src_start = (y + n) * width;
+        let src_end = (bottom + 1) * width;
+        let dst_start = y * width;
+        if src_start < src_end {
+            self.cells.copy_within(src_start..src_end, dst_start);
         }
+
         // Clear bottom lines of scroll region
         let blank = self.blank_cell();
         for row in (bottom + 1).saturating_sub(n)..=bottom {
-            for x in 0..width {
-                self.cells[row * width + x] = blank;
+            let start = row * width;
+            for cell in &mut self.cells[start..start + width] {
+                *cell = blank;
             }
         }
     }
@@ -974,10 +973,9 @@ impl ScreenBuffer {
         self.erase_line_right();
         let blank = self.blank_cell();
         let width = self.width as usize;
-        for y in (self.cursor_y as usize + 1)..(self.height as usize) {
-            for x in 0..width {
-                self.cells[y * width + x] = blank;
-            }
+        let start = (self.cursor_y as usize + 1) * width;
+        for cell in &mut self.cells[start..] {
+            *cell = blank;
         }
     }
 
@@ -986,10 +984,9 @@ impl ScreenBuffer {
         self.erase_line_left();
         let blank = self.blank_cell();
         let width = self.width as usize;
-        for y in 0..(self.cursor_y as usize) {
-            for x in 0..width {
-                self.cells[y * width + x] = blank;
-            }
+        let end = self.cursor_y as usize * width;
+        for cell in &mut self.cells[..end] {
+            *cell = blank;
         }
     }
 
@@ -997,8 +994,9 @@ impl ScreenBuffer {
         let blank = self.blank_cell();
         let y = self.cursor_y as usize;
         let width = self.width as usize;
-        for x in 0..width {
-            self.cells[y * width + x] = blank;
+        let start = y * width;
+        for cell in &mut self.cells[start..start + width] {
+            *cell = blank;
         }
     }
 
@@ -1006,8 +1004,10 @@ impl ScreenBuffer {
         let blank = self.blank_cell();
         let y = self.cursor_y as usize;
         let width = self.width as usize;
-        for x in (self.cursor_x as usize)..width {
-            self.cells[y * width + x] = blank;
+        let start = y * width + self.cursor_x as usize;
+        let end = (y + 1) * width;
+        for cell in &mut self.cells[start..end] {
+            *cell = blank;
         }
     }
 
@@ -1015,8 +1015,10 @@ impl ScreenBuffer {
         let blank = self.blank_cell();
         let y = self.cursor_y as usize;
         let width = self.width as usize;
-        for x in 0..=(self.cursor_x as usize).min(width - 1) {
-            self.cells[y * width + x] = blank;
+        let start = y * width;
+        let end = start + (self.cursor_x as usize + 1).min(width);
+        for cell in &mut self.cells[start..end] {
+            *cell = blank;
         }
     }
 

@@ -239,14 +239,17 @@ impl App {
         Ok(())
     }
 
-    /// Process PTY output
-    fn process_pty_messages(&mut self) {
+    /// Process PTY output, returns true if any data was processed
+    fn process_pty_messages(&mut self) -> bool {
+        let mut had_data = false;
+
         while let Ok(msg) = self.pty_rx.try_recv() {
             match msg {
                 PtyMessage::Data { pane_id, data } => {
                     if let Some(buffer) = self.buffers.get_mut(&pane_id) {
                         buffer.process(&data);
                         self.needs_redraw = true;
+                        had_data = true;
                     }
                 }
                 PtyMessage::Exit { pane_id } => {
@@ -274,6 +277,8 @@ impl App {
             }
             self.needs_redraw = true;
         }
+
+        had_data
     }
 
     /// Handle keyboard input
@@ -744,6 +749,8 @@ impl App {
 }
 
 fn run() -> Result<()> {
+    use std::time::Instant;
+
     let (width, height) = terminal::size().context("Failed to get terminal size")?;
 
     let mut app = App::new(width, height);
@@ -755,13 +762,31 @@ fn run() -> Result<()> {
     terminal::enable_raw_mode().context("Failed to enable raw mode")?;
     execute!(io::stdout(), EnterAlternateScreen, SetTitle("simplex"))?;
 
+    // Frame timing - target ~60fps max, but render immediately if idle
+    let frame_duration = Duration::from_micros(16667); // ~60fps
+    let mut last_render = Instant::now();
+
     // Main loop
     while app.running {
-        // Process PTY output
-        app.process_pty_messages();
+        // Process all available PTY output first
+        let had_pty_data = app.process_pty_messages();
 
-        // Check for input
-        if event::poll(Duration::from_millis(10))? {
+        // Check for input with adaptive timeout:
+        // - If we have pending renders and frame time elapsed, render now (0ms timeout)
+        // - If PTY data is flowing, use short timeout to stay responsive
+        // - Otherwise use longer timeout to reduce CPU usage
+        let now = Instant::now();
+        let since_render = now.duration_since(last_render);
+
+        let poll_timeout = if app.needs_redraw && since_render >= frame_duration {
+            Duration::ZERO // Render immediately
+        } else if had_pty_data {
+            Duration::from_micros(500) // Quick check for more data
+        } else {
+            Duration::from_millis(16) // Idle - save CPU
+        };
+
+        if event::poll(poll_timeout)? {
             match event::read()? {
                 Event::Key(key) => app.handle_key(key)?,
                 Event::Resize(w, h) => app.resize(w, h)?,
@@ -769,8 +794,14 @@ fn run() -> Result<()> {
             }
         }
 
-        // Render
-        app.render()?;
+        // Render if needed and frame time has elapsed (or if we're idle)
+        if app.needs_redraw {
+            let now = Instant::now();
+            if now.duration_since(last_render) >= frame_duration || !had_pty_data {
+                app.render()?;
+                last_render = now;
+            }
+        }
 
         // Exit if no panes left
         if app.panes.is_empty() {
