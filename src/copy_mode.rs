@@ -1,5 +1,34 @@
 //! Vim-style copy mode for scrollback navigation and text selection
 
+/// Character classification for word motions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CharClass {
+    Whitespace,
+    Word,  // alphanumeric + underscore
+    Punct, // everything else
+}
+
+impl CharClass {
+    pub fn of(c: char) -> Self {
+        if c.is_whitespace() {
+            CharClass::Whitespace
+        } else if c.is_alphanumeric() || c == '_' {
+            CharClass::Word
+        } else {
+            CharClass::Punct
+        }
+    }
+
+    /// For WORD motions: only whitespace vs non-whitespace
+    pub fn of_word(c: char) -> Self {
+        if c.is_whitespace() {
+            CharClass::Whitespace
+        } else {
+            CharClass::Word
+        }
+    }
+}
+
 /// Position in the buffer (x is column, y can be negative for scrollback)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferPos {
@@ -311,6 +340,101 @@ impl CopyModeState {
         self.buffer_y_to_screen_y(self.cursor.y)
             .map(|y| (self.cursor.x, y))
     }
+
+    // === Word Motions ===
+
+    /// Move to start of next word (w)
+    pub fn move_word_forward(&mut self, line_content: &[char], big_word: bool) {
+        let classify = if big_word { CharClass::of_word } else { CharClass::of };
+        let x = self.cursor.x as usize;
+        let len = line_content.len();
+
+        if x >= len {
+            return;
+        }
+
+        let current_class = classify(line_content[x]);
+        let mut pos = x;
+
+        // Skip current word (same class)
+        while pos < len && classify(line_content[pos]) == current_class {
+            pos += 1;
+        }
+
+        // Skip whitespace
+        while pos < len && classify(line_content[pos]) == CharClass::Whitespace {
+            pos += 1;
+        }
+
+        if pos < len {
+            self.move_cursor(BufferPos::new(pos as u16, self.cursor.y));
+        } else {
+            // End of line - stay at last position
+            self.move_cursor(BufferPos::new((len.saturating_sub(1)) as u16, self.cursor.y));
+        }
+    }
+
+    /// Move to start of previous word (b)
+    pub fn move_word_backward(&mut self, line_content: &[char], big_word: bool) {
+        let classify = if big_word { CharClass::of_word } else { CharClass::of };
+        let x = self.cursor.x as usize;
+
+        if x == 0 || line_content.is_empty() {
+            return;
+        }
+
+        let mut pos = x.saturating_sub(1);
+
+        // Skip whitespace backwards
+        while pos > 0 && classify(line_content[pos]) == CharClass::Whitespace {
+            pos -= 1;
+        }
+
+        if pos == 0 {
+            self.move_cursor(BufferPos::new(0, self.cursor.y));
+            return;
+        }
+
+        let target_class = classify(line_content[pos]);
+
+        // Skip to start of current word
+        while pos > 0 && classify(line_content[pos - 1]) == target_class {
+            pos -= 1;
+        }
+
+        self.move_cursor(BufferPos::new(pos as u16, self.cursor.y));
+    }
+
+    /// Move to end of word (e)
+    pub fn move_word_end(&mut self, line_content: &[char], big_word: bool) {
+        let classify = if big_word { CharClass::of_word } else { CharClass::of };
+        let x = self.cursor.x as usize;
+        let len = line_content.len();
+
+        if x >= len.saturating_sub(1) {
+            return;
+        }
+
+        let mut pos = x + 1;
+
+        // Skip whitespace
+        while pos < len && classify(line_content[pos]) == CharClass::Whitespace {
+            pos += 1;
+        }
+
+        if pos >= len {
+            return;
+        }
+
+        let target_class = classify(line_content[pos]);
+
+        // Move to end of word
+        while pos + 1 < len && classify(line_content[pos + 1]) == target_class {
+            pos += 1;
+        }
+
+        self.move_cursor(BufferPos::new(pos as u16, self.cursor.y));
+    }
 }
 
 #[cfg(test)]
@@ -412,6 +536,72 @@ mod tests {
         // Check selection bounds (full lines)
         let bounds = state.get_selection_bounds().unwrap();
         assert_eq!(bounds, (0, 10, 79, 12));
+    }
+
+    #[test]
+    fn test_word_forward() {
+        let mut state = CopyModeState::new(80, 24, 100);
+        state.cursor = BufferPos::new(0, 0);
+
+        // "hello world_test  foo.bar"
+        let line: Vec<char> = "hello world_test  foo.bar".chars().collect();
+
+        // w from start -> "world"
+        state.move_word_forward(&line, false);
+        assert_eq!(state.cursor.x, 6); // 'w' of world
+
+        // w again -> "foo"
+        state.move_word_forward(&line, false);
+        assert_eq!(state.cursor.x, 18); // 'f' of foo
+
+        // w again -> "." (punct is separate word class)
+        state.cursor.x = 18;
+        state.move_word_forward(&line, false);
+        assert_eq!(state.cursor.x, 21); // '.'
+
+        // W (big word) from start
+        state.cursor.x = 0;
+        state.move_word_forward(&line, true);
+        assert_eq!(state.cursor.x, 6); // 'w' of world_test
+
+        state.move_word_forward(&line, true);
+        assert_eq!(state.cursor.x, 18); // 'f' of foo.bar
+    }
+
+    #[test]
+    fn test_word_backward() {
+        let mut state = CopyModeState::new(80, 24, 100);
+
+        let line: Vec<char> = "hello world_test  foo".chars().collect();
+
+        // b from end
+        state.cursor = BufferPos::new(20, 0);
+        state.move_word_backward(&line, false);
+        assert_eq!(state.cursor.x, 18); // 'f' of foo
+
+        // b again -> "world"
+        state.move_word_backward(&line, false);
+        assert_eq!(state.cursor.x, 6); // 'w' of world_test
+
+        // b again -> "hello"
+        state.move_word_backward(&line, false);
+        assert_eq!(state.cursor.x, 0);
+    }
+
+    #[test]
+    fn test_word_end() {
+        let mut state = CopyModeState::new(80, 24, 100);
+        state.cursor = BufferPos::new(0, 0);
+
+        let line: Vec<char> = "hello world foo".chars().collect();
+
+        // e from start -> end of "hello"
+        state.move_word_end(&line, false);
+        assert_eq!(state.cursor.x, 4); // 'o' of hello
+
+        // e again -> end of "world"
+        state.move_word_end(&line, false);
+        assert_eq!(state.cursor.x, 10); // 'd' of world
     }
 
     #[test]

@@ -532,6 +532,7 @@ impl App {
             let mut yank_selection = false;
             let mut do_first_non_blank = false;
             let mut do_line_end = false;
+            let mut do_word_motion: Option<(bool, bool, bool)> = None; // (forward, end, big_word)
 
             if let Some(ref mut copy_state) = self.copy_mode {
                 match key.code {
@@ -563,6 +564,26 @@ impl App {
                     }
                     KeyCode::Char('^') => {
                         do_first_non_blank = true;
+                    }
+
+                    // Word motions: w, W, b, B, e, E
+                    KeyCode::Char('w') => {
+                        do_word_motion = Some((true, false, false)); // forward, not end, small word
+                    }
+                    KeyCode::Char('W') => {
+                        do_word_motion = Some((true, false, true)); // forward, not end, big WORD
+                    }
+                    KeyCode::Char('b') => {
+                        do_word_motion = Some((false, false, false)); // backward, small word
+                    }
+                    KeyCode::Char('B') => {
+                        do_word_motion = Some((false, false, true)); // backward, big WORD
+                    }
+                    KeyCode::Char('e') => {
+                        do_word_motion = Some((true, true, false)); // forward, end, small word
+                    }
+                    KeyCode::Char('E') => {
+                        do_word_motion = Some((true, true, true)); // forward, end, big WORD
                     }
 
                     // Buffer navigation: gg, G
@@ -611,8 +632,8 @@ impl App {
                 }
             }
 
-            // Handle $ and ^ motions (need separate borrow for line content)
-            if do_line_end || do_first_non_blank {
+            // Handle motions that need line content (separate borrow)
+            if do_line_end || do_first_non_blank || do_word_motion.is_some() {
                 if let Some(pane) = self.panes.focused() {
                     if let Some(buffer) = self.buffers.get(&pane.id) {
                         if let Some(ref copy_state) = self.copy_mode {
@@ -620,8 +641,16 @@ impl App {
                             if let Some(ref mut cs) = self.copy_mode {
                                 if do_line_end {
                                     cs.move_to_line_end(&line);
-                                } else {
+                                } else if do_first_non_blank {
                                     cs.move_to_first_non_blank(&line);
+                                } else if let Some((forward, end, big_word)) = do_word_motion {
+                                    if forward && !end {
+                                        cs.move_word_forward(&line, big_word);
+                                    } else if !forward {
+                                        cs.move_word_backward(&line, big_word);
+                                    } else {
+                                        cs.move_word_end(&line, big_word);
+                                    }
                                 }
                             }
                         }
