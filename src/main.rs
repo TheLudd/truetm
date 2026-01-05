@@ -765,6 +765,7 @@ impl App {
         {
             if let Some(mut stdin) = child.stdin.take() {
                 let _ = stdin.write_all(text.as_bytes());
+                drop(stdin); // Close stdin so xclip can read
             }
             let _ = child.wait();
             return Ok(());
@@ -778,6 +779,7 @@ impl App {
         {
             if let Some(mut stdin) = child.stdin.take() {
                 let _ = stdin.write_all(text.as_bytes());
+                drop(stdin);
             }
             let _ = child.wait();
             return Ok(());
