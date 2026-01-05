@@ -15,7 +15,7 @@ pub const MASTER_RATIO: f32 = 0.55;
 pub const MASTER_ADJUST_STEP: f32 = 0.05;
 
 /// Maximum lines stored in scrollback buffer per pane
-pub const SCROLLBACK_LINES: usize = 1000;
+pub const SCROLLBACK_LINES: usize = 10_000;
 
 // ============================================================================
 // PREFIX KEY
