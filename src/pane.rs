@@ -266,24 +266,13 @@ impl PaneManager {
     }
 
     /// Get pane IDs visible in the given view (have any of the view's tags)
-    /// Returns focused pane first (important for monocle layout)
+    /// Returns panes in layout order (first = master, rest = stack)
     pub fn visible_in_view(&self, view: TagSet) -> Vec<PaneId> {
-        let mut ids: Vec<PaneId> = self.panes
+        self.panes
             .iter()
             .filter(|p| p.tags.intersects(view))
             .map(|p| p.id)
-            .collect();
-
-        // Move focused pane to front for monocle layout
-        if let Some(focused) = self.focused() {
-            if let Some(pos) = ids.iter().position(|&id| id == focused.id) {
-                if pos > 0 {
-                    ids.remove(pos);
-                    ids.insert(0, focused.id);
-                }
-            }
-        }
-        ids
+            .collect()
     }
 
     /// Check if any pane has the given tag
