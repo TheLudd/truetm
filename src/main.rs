@@ -646,17 +646,14 @@ impl App {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                // Finish selection and copy to clipboard
-                if let Some(sel) = self.mouse_selection.take() {
+                // Finish selection and copy to clipboard (but keep selection visible)
+                if let Some(ref sel) = self.mouse_selection {
                     if sel.buf_start_x != sel.buf_end_x || sel.buf_start_y != sel.buf_end_y {
                         // Extract selected text and copy
-                        if let Some(text) = self.extract_selection(&sel) {
+                        if let Some(text) = self.extract_selection(sel) {
                             self.copy_to_clipboard(&text)?;
                         }
                     }
-                    // Clear selection highlight
-                    self.compositor.invalidate();
-                    self.needs_redraw = true;
                 }
             }
             MouseEventKind::ScrollUp => {
