@@ -8,12 +8,12 @@ build:
 	cargo build --release
 
 install: build
-	install -Dm755 target/release/simplex $(DESTDIR)$(BINDIR)/simplex
-	install -Dm644 simplex.1 $(DESTDIR)$(MANDIR)/simplex.1
+	install -Dm755 target/release/truetm $(DESTDIR)$(BINDIR)/truetm
+	install -Dm644 truetm.1 $(DESTDIR)$(MANDIR)/truetm.1
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/simplex
-	rm -f $(DESTDIR)$(MANDIR)/simplex.1
+	rm -f $(DESTDIR)$(BINDIR)/truetm
+	rm -f $(DESTDIR)$(MANDIR)/truetm.1
 
 clean:
 	cargo clean

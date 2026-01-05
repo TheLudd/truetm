@@ -1,4 +1,4 @@
-# simplex
+# truetm
 
 A terminal multiplexer inspired by [dvtm](https://www.brain-dump.org/projects/dvtm/) with truecolor support.
 
@@ -33,16 +33,16 @@ xcode-select --install
 ### From source
 
 ```sh
-git clone https://github.com/theludd/simplex
-cd simplex
+git clone https://github.com/theludd/truetm
+cd truetm
 cargo build --release
-sudo cp target/release/simplex /usr/local/bin/
+sudo cp target/release/truetm /usr/local/bin/
 ```
 
 ## Usage
 
 ```sh
-simplex
+truetm
 ```
 
 ## Keybindings
@@ -62,7 +62,7 @@ All keybindings use `Ctrl+B` as the prefix key.
 | `Ctrl+B l`     | Increase master width                        |
 | `Ctrl+B 1-9`   | Focus window by number                       |
 | `Ctrl+B a`     | Toggle broadcast mode (input to all windows) |
-| `Ctrl+B q`     | Quit simplex                                 |
+| `Ctrl+B q`     | Quit truetm                                  |
 | `Ctrl+B b`     | Send literal Ctrl+B to window                |
 
 ### Tags (Workspaces)
@@ -94,7 +94,7 @@ Scrollback stores up to 1000 lines of history per window.
 
 ## Configuration
 
-simplex follows the dwm philosophy: configuration is done at compile time by editing `src/config.rs`. This file contains all keybindings and settings in a readable format.
+truetm follows the dwm philosophy: configuration is done at compile time by editing `src/config.rs`. This file contains all keybindings and settings in a readable format.
 
 ## License
 MIT

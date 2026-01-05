@@ -742,7 +742,7 @@ fn run() -> Result<()> {
 
     // Set up terminal
     terminal::enable_raw_mode().context("Failed to enable raw mode")?;
-    execute!(io::stdout(), EnterAlternateScreen, SetTitle("simplex"))?;
+    execute!(io::stdout(), EnterAlternateScreen, SetTitle("truetm"))?;
 
     // Frame timing - target ~60fps max, but render immediately if idle
     let frame_duration = Duration::from_micros(16667); // ~60fps
