@@ -82,6 +82,9 @@ pub struct ScreenBuffer {
     title: Option<String>,
     // Cursor visibility (controlled by CSI ?25h/l)
     cursor_visible: bool,
+    // Scroll region (top and bottom line, 0-indexed, inclusive)
+    scroll_top: u16,
+    scroll_bottom: u16,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -114,6 +117,8 @@ impl ScreenBuffer {
             in_alternate_screen: false,
             title: None,
             cursor_visible: true,
+            scroll_top: 0,
+            scroll_bottom: height.saturating_sub(1),
         }
     }
 
@@ -139,6 +144,9 @@ impl ScreenBuffer {
         self.height = height;
         self.cursor_x = self.cursor_x.min(width.saturating_sub(1));
         self.cursor_y = self.cursor_y.min(height.saturating_sub(1));
+        // Reset scroll region to full screen
+        self.scroll_top = 0;
+        self.scroll_bottom = height.saturating_sub(1);
     }
 
     /// Process raw bytes from PTY
@@ -484,7 +492,16 @@ impl ScreenBuffer {
                 self.delete_lines(n);
             }
             b'r' => {
-                // Set scrolling region - ignore for now
+                // DECSTBM - Set Top and Bottom Margins (scroll region)
+                let top = params.first().copied().unwrap_or(1).max(1) - 1;
+                let bottom = params.get(1).copied().unwrap_or(self.height).max(1) - 1;
+                if top < bottom && bottom < self.height {
+                    self.scroll_top = top;
+                    self.scroll_bottom = bottom;
+                    // Cursor moves to home position after setting scroll region
+                    self.cursor_x = 0;
+                    self.cursor_y = 0;
+                }
             }
             b'G' => {
                 // Cursor horizontal absolute (column)
@@ -571,6 +588,20 @@ impl ScreenBuffer {
                 // Could be start of CSI Ps SP q sequence - already consumed
                 // The 'q' would be the final byte, but we got ' ' as final
                 // This means malformed sequence, ignore
+            }
+            b'S' => {
+                // SU - Scroll Up (pan down)
+                let n = params.first().copied().unwrap_or(1).max(1);
+                for _ in 0..n {
+                    self.scroll_up();
+                }
+            }
+            b'T' => {
+                // SD - Scroll Down (pan up)
+                let n = params.first().copied().unwrap_or(1).max(1);
+                for _ in 0..n {
+                    self.scroll_down();
+                }
             }
             _ => {}
         }
@@ -798,46 +829,77 @@ impl ScreenBuffer {
     }
 
     fn line_feed(&mut self) {
-        if self.cursor_y + 1 >= self.height {
-            // Scroll up
+        if self.cursor_y >= self.scroll_bottom {
+            // At bottom of scroll region - scroll up
             self.scroll_up();
-        } else {
+        } else if self.cursor_y + 1 < self.height {
             self.cursor_y += 1;
         }
     }
 
     fn scroll_up(&mut self) {
-        // Move all lines up, discard top line
+        // Scroll within the scroll region only
         let width = self.width as usize;
-        for y in 0..(self.height as usize - 1) {
+        let top = self.scroll_top as usize;
+        let bottom = self.scroll_bottom as usize;
+
+        // Move lines up within scroll region
+        for y in top..bottom {
             let src = (y + 1) * width;
             let dst = y * width;
             for x in 0..width {
                 self.cells[dst + x] = self.cells[src + x];
             }
         }
-        // Clear bottom line
+        // Clear bottom line of scroll region
         let blank = self.blank_cell();
-        let last_row = (self.height as usize - 1) * width;
+        let last_row = bottom * width;
         for x in 0..width {
             self.cells[last_row + x] = blank;
+        }
+    }
+
+    fn scroll_down(&mut self) {
+        // Scroll down within the scroll region only
+        let width = self.width as usize;
+        let top = self.scroll_top as usize;
+        let bottom = self.scroll_bottom as usize;
+
+        // Move lines down within scroll region
+        for y in (top + 1..=bottom).rev() {
+            let src = (y - 1) * width;
+            let dst = y * width;
+            for x in 0..width {
+                self.cells[dst + x] = self.cells[src + x];
+            }
+        }
+        // Clear top line of scroll region
+        let blank = self.blank_cell();
+        let first_row = top * width;
+        for x in 0..width {
+            self.cells[first_row + x] = blank;
         }
     }
 
     fn insert_lines(&mut self, n: usize) {
         let y = self.cursor_y as usize;
         let width = self.width as usize;
-        let height = self.height as usize;
+        let bottom = self.scroll_bottom as usize;
 
-        // Move lines down
-        for row in (y..height.saturating_sub(n)).rev() {
+        // Only operate within scroll region and if cursor is in region
+        if y < self.scroll_top as usize || y > bottom {
+            return;
+        }
+
+        // Move lines down within scroll region
+        for row in (y..=bottom.saturating_sub(n)).rev() {
             for x in 0..width {
                 self.cells[(row + n) * width + x] = self.cells[row * width + x];
             }
         }
         // Clear inserted lines
         let blank = self.blank_cell();
-        for row in y..(y + n).min(height) {
+        for row in y..(y + n).min(bottom + 1) {
             for x in 0..width {
                 self.cells[row * width + x] = blank;
             }
@@ -847,17 +909,22 @@ impl ScreenBuffer {
     fn delete_lines(&mut self, n: usize) {
         let y = self.cursor_y as usize;
         let width = self.width as usize;
-        let height = self.height as usize;
+        let bottom = self.scroll_bottom as usize;
 
-        // Move lines up
-        for row in y..height.saturating_sub(n) {
+        // Only operate within scroll region and if cursor is in region
+        if y < self.scroll_top as usize || y > bottom {
+            return;
+        }
+
+        // Move lines up within scroll region
+        for row in y..=bottom.saturating_sub(n) {
             for x in 0..width {
                 self.cells[row * width + x] = self.cells[(row + n) * width + x];
             }
         }
-        // Clear bottom lines
+        // Clear bottom lines of scroll region
         let blank = self.blank_cell();
-        for row in height.saturating_sub(n)..height {
+        for row in (bottom + 1).saturating_sub(n)..=bottom {
             for x in 0..width {
                 self.cells[row * width + x] = blank;
             }
