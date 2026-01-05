@@ -268,9 +268,10 @@ impl ScreenBuffer {
                 self.parse_state = ParseState::Dcs;
                 self.parse_buffer.clear();
             }
-            b'(' | b')' | b'*' | b'+' => {
+            b'(' | b')' | b'*' | b'+' | b'-' | b'.' | b'/' => {
                 // Character set designation - next byte is the charset ID
                 // ESC ( B = G0 to ASCII, ESC ) 0 = G1 to DEC graphics, etc.
+                // ESC - / . / / are for 96-character sets (VT220+)
                 // We need to consume the next byte too
                 self.parse_state = ParseState::CharsetSelect;
             }
