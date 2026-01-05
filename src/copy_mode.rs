@@ -160,15 +160,6 @@ impl CopyModeState {
         self.count = None;
     }
 
-    /// Update buffer dimensions (on resize)
-    pub fn update_dimensions(&mut self, width: u16, height: u16, scrollback_len: usize) {
-        self.buffer_width = width;
-        self.buffer_height = height;
-        self.scrollback_len = scrollback_len;
-        // Clamp cursor to new bounds
-        self.clamp_cursor();
-    }
-
     /// Clamp cursor position to valid bounds
     fn clamp_cursor(&mut self) {
         let max_y = (self.buffer_height as i32) - 1;
@@ -353,34 +344,6 @@ impl CopyModeState {
                 Some((0, start.y, self.buffer_width.saturating_sub(1), end.y))
             }
         }
-    }
-
-    /// Check if a cell is selected (for rendering)
-    pub fn is_selected(&self, x: u16, y: i32) -> bool {
-        if let Some((start_x, start_y, end_x, end_y)) = self.get_selection_bounds() {
-            if y < start_y || y > end_y {
-                return false;
-            }
-            if y == start_y && y == end_y {
-                // Single line selection
-                return x >= start_x && x <= end_x;
-            }
-            if y == start_y {
-                return x >= start_x;
-            }
-            if y == end_y {
-                return x <= end_x;
-            }
-            // Middle lines are fully selected
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Convert screen Y coordinate to buffer Y coordinate
-    pub fn screen_y_to_buffer_y(&self, screen_y: u16) -> i32 {
-        (screen_y as i32) - (self.scroll_offset as i32)
     }
 
     /// Convert buffer Y coordinate to screen Y coordinate (None if not visible)
@@ -1068,26 +1031,6 @@ mod tests {
         // e again -> end of "world"
         state.move_word_end(&line, false);
         assert_eq!(state.cursor.x, 10); // 'd' of world
-    }
-
-    #[test]
-    fn test_is_selected() {
-        let mut state = CopyModeState::new(80, 24, 100);
-        state.cursor = BufferPos::new(5, 10);
-        state.toggle_visual_char();
-        state.cursor = BufferPos::new(10, 10);
-        state.selection.as_mut().unwrap().cursor = state.cursor;
-
-        // Within selection
-        assert!(state.is_selected(5, 10));
-        assert!(state.is_selected(7, 10));
-        assert!(state.is_selected(10, 10));
-
-        // Outside selection
-        assert!(!state.is_selected(4, 10));
-        assert!(!state.is_selected(11, 10));
-        assert!(!state.is_selected(5, 9));
-        assert!(!state.is_selected(5, 11));
     }
 
     #[test]

@@ -34,11 +34,11 @@ fn main() -> Result<()> {
 
     let result = run();
 
-    // Cleanup
+    // Cleanup - position cursor at bottom before leaving alternate screen to avoid blank line
     let _ = execute!(io::stdout(), DisableMouseCapture);
     let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     let _ = terminal::disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, ResetColor);
+    let _ = execute!(io::stdout(), ResetColor, Show, LeaveAlternateScreen);
 
     result
 }
