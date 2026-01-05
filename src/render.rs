@@ -8,12 +8,42 @@ use crossterm::{
 };
 use std::io::Write;
 
+/// Text attributes as bitflags
+#[derive(Clone, Copy, PartialEq, Default)]
+pub struct Attrs(u8);
+
+impl Attrs {
+    pub const BOLD: u8 = 1 << 0;
+    pub const DIM: u8 = 1 << 1;
+    pub const ITALIC: u8 = 1 << 2;
+    pub const UNDERLINE: u8 = 1 << 3;
+    pub const REVERSE: u8 = 1 << 4;
+    pub const STRIKETHROUGH: u8 = 1 << 5;
+
+    pub fn has(&self, attr: u8) -> bool {
+        self.0 & attr != 0
+    }
+
+    pub fn set(&mut self, attr: u8) {
+        self.0 |= attr;
+    }
+
+    pub fn clear(&mut self, attr: u8) {
+        self.0 &= !attr;
+    }
+
+    pub fn reset(&mut self) {
+        self.0 = 0;
+    }
+}
+
 /// A cell in the screen buffer
 #[derive(Clone, Copy, PartialEq)]
 pub struct Cell {
     pub ch: char,
     pub fg: Option<Color>,
     pub bg: Option<Color>,
+    pub attrs: Attrs,
 }
 
 impl Default for Cell {
@@ -22,6 +52,7 @@ impl Default for Cell {
             ch: ' ',
             fg: None,
             bg: None,
+            attrs: Attrs::default(),
         }
     }
 }
@@ -36,6 +67,7 @@ pub struct ScreenBuffer {
     // Current text attributes
     current_fg: Option<Color>,
     current_bg: Option<Color>,
+    current_attrs: Attrs,
     // Parser state
     parse_state: ParseState,
     parse_buffer: Vec<u8>,
@@ -48,6 +80,8 @@ pub struct ScreenBuffer {
     in_alternate_screen: bool,
     // Window title (set via OSC sequences)
     title: Option<String>,
+    // Cursor visibility (controlled by CSI ?25h/l)
+    cursor_visible: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -68,6 +102,7 @@ impl ScreenBuffer {
             cursor_y: 0,
             current_fg: None,
             current_bg: None,
+            current_attrs: Attrs::default(),
             parse_state: ParseState::Normal,
             parse_buffer: Vec::new(),
             utf8_buffer: Vec::new(),
@@ -76,6 +111,7 @@ impl ScreenBuffer {
             saved_cursor: None,
             in_alternate_screen: false,
             title: None,
+            cursor_visible: true,
         }
     }
 
@@ -210,11 +246,16 @@ impl ScreenBuffer {
                 self.parse_state = ParseState::Normal;
             }
             b'7' => {
-                // Save cursor - ignore for now
+                // Save cursor (DECSC)
+                self.saved_cursor = Some((self.cursor_x, self.cursor_y));
                 self.parse_state = ParseState::Normal;
             }
             b'8' => {
-                // Restore cursor - ignore for now
+                // Restore cursor (DECRC)
+                if let Some((x, y)) = self.saved_cursor {
+                    self.cursor_x = x.min(self.width.saturating_sub(1));
+                    self.cursor_y = y.min(self.height.saturating_sub(1));
+                }
                 self.parse_state = ParseState::Normal;
             }
             _ => {
@@ -354,6 +395,27 @@ impl ScreenBuffer {
             b'r' => {
                 // Set scrolling region - ignore for now
             }
+            b'G' => {
+                // Cursor horizontal absolute (column)
+                let col = params.first().copied().unwrap_or(1).max(1) - 1;
+                self.cursor_x = col.min(self.width.saturating_sub(1));
+            }
+            b's' => {
+                // Save cursor position (ANSI)
+                self.saved_cursor = Some((self.cursor_x, self.cursor_y));
+            }
+            b'u' => {
+                // Restore cursor position (ANSI)
+                if let Some((x, y)) = self.saved_cursor {
+                    self.cursor_x = x.min(self.width.saturating_sub(1));
+                    self.cursor_y = y.min(self.height.saturating_sub(1));
+                }
+            }
+            b'd' => {
+                // Cursor vertical absolute (line)
+                let row = params.first().copied().unwrap_or(1).max(1) - 1;
+                self.cursor_y = row.min(self.height.saturating_sub(1));
+            }
             b'h' | b'l' => {
                 // Set/reset mode
                 let is_set = final_byte == b'h';
@@ -365,12 +427,70 @@ impl ScreenBuffer {
                     }
                 }
             }
+            b'X' => {
+                // Erase characters (replace with spaces)
+                let n = params.first().copied().unwrap_or(1).max(1) as usize;
+                let blank = self.blank_cell();
+                let y = self.cursor_y as usize;
+                let width = self.width as usize;
+                for i in 0..n {
+                    let x = self.cursor_x as usize + i;
+                    if x < width {
+                        self.cells[y * width + x] = blank;
+                    }
+                }
+            }
+            b'P' => {
+                // Delete characters (shift left)
+                let n = params.first().copied().unwrap_or(1).max(1) as usize;
+                let y = self.cursor_y as usize;
+                let width = self.width as usize;
+                let x = self.cursor_x as usize;
+                let blank = self.blank_cell();
+                // Shift cells left
+                for i in x..width.saturating_sub(n) {
+                    self.cells[y * width + i] = self.cells[y * width + i + n];
+                }
+                // Fill end with blanks
+                for i in width.saturating_sub(n)..width {
+                    self.cells[y * width + i] = blank;
+                }
+            }
+            b'@' => {
+                // Insert characters (shift right)
+                let n = params.first().copied().unwrap_or(1).max(1) as usize;
+                let y = self.cursor_y as usize;
+                let width = self.width as usize;
+                let x = self.cursor_x as usize;
+                let blank = self.blank_cell();
+                // Shift cells right
+                for i in (x + n..width).rev() {
+                    self.cells[y * width + i] = self.cells[y * width + i - n];
+                }
+                // Fill with blanks
+                for i in x..(x + n).min(width) {
+                    self.cells[y * width + i] = blank;
+                }
+            }
+            b'q' => {
+                // DECSCUSR - Set cursor style (ignore, we manage cursor ourselves)
+                // CSI Ps SP q - but SP is space (0x20), handled separately
+            }
+            b' ' => {
+                // Could be start of CSI Ps SP q sequence - already consumed
+                // The 'q' would be the final byte, but we got ' ' as final
+                // This means malformed sequence, ignore
+            }
             _ => {}
         }
     }
 
     fn handle_private_mode(&mut self, mode: u16, is_set: bool) {
         match mode {
+            25 => {
+                // Cursor visibility
+                self.cursor_visible = is_set;
+            }
             1049 => {
                 // Alternate screen buffer with saved cursor
                 if is_set {
@@ -433,9 +553,10 @@ impl ScreenBuffer {
 
     fn process_sgr(&mut self, params: &[u16]) {
         if params.is_empty() {
-            // Reset
+            // Reset all
             self.current_fg = None;
             self.current_bg = None;
+            self.current_attrs.reset();
             return;
         }
 
@@ -443,10 +564,26 @@ impl ScreenBuffer {
         while i < params.len() {
             match params[i] {
                 0 => {
+                    // Reset all
                     self.current_fg = None;
                     self.current_bg = None;
+                    self.current_attrs.reset();
                 }
-                1 | 22 => {} // Bold on/off - ignored
+                1 => self.current_attrs.set(Attrs::BOLD),
+                2 => self.current_attrs.set(Attrs::DIM),
+                3 => self.current_attrs.set(Attrs::ITALIC),
+                4 => self.current_attrs.set(Attrs::UNDERLINE),
+                7 => self.current_attrs.set(Attrs::REVERSE),
+                9 => self.current_attrs.set(Attrs::STRIKETHROUGH),
+                21 => self.current_attrs.clear(Attrs::BOLD), // Double underline or bold off
+                22 => {
+                    self.current_attrs.clear(Attrs::BOLD);
+                    self.current_attrs.clear(Attrs::DIM);
+                }
+                23 => self.current_attrs.clear(Attrs::ITALIC),
+                24 => self.current_attrs.clear(Attrs::UNDERLINE),
+                27 => self.current_attrs.clear(Attrs::REVERSE),
+                29 => self.current_attrs.clear(Attrs::STRIKETHROUGH),
                 30..=37 => self.current_fg = Some(ansi_to_color(params[i] - 30)),
                 38 => {
                     // Extended foreground
@@ -503,6 +640,7 @@ impl ScreenBuffer {
                 ch,
                 fg: self.current_fg,
                 bg: self.current_bg,
+                attrs: self.current_attrs,
             };
         }
         self.cursor_x += 1;
@@ -581,6 +719,7 @@ impl ScreenBuffer {
             ch: ' ',
             fg: None,
             bg: self.current_bg,
+            attrs: Attrs::default(),
         }
     }
 
@@ -663,6 +802,10 @@ impl ScreenBuffer {
 
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    pub fn cursor_visible(&self) -> bool {
+        self.cursor_visible
     }
 }
 
@@ -753,8 +896,9 @@ impl Compositor {
 
         let mut last_fg: Option<Color> = None;
         let mut last_bg: Option<Color> = None;
+        let mut last_attrs = Attrs::default();
         let mut need_move = true;
-        let mut attr_set = false;
+        let mut attrs_applied = false;
 
         for y in 0..rect.height.min(buffer.height()) {
             let screen_y = rect.y + y;
@@ -767,11 +911,7 @@ impl Compositor {
                 let screen_idx = (screen_y as usize) * (self.width as usize) + (screen_x as usize);
                 if screen_idx < self.last_frame.len() {
                     let last = &self.last_frame[screen_idx];
-                    if last.cell.ch == cell.ch
-                        && last.cell.fg == cell.fg
-                        && last.cell.bg == cell.bg
-                        && last.focused == focused
-                    {
+                    if last.cell == cell && last.focused == focused {
                         // Cell unchanged, skip it
                         need_move = true;
                         continue;
@@ -782,35 +922,54 @@ impl Compositor {
                 if need_move {
                     queue!(writer, MoveTo(screen_x, screen_y))?;
                     need_move = false;
-                    // Reset color state after move
+                    // Reset state after move
                     last_fg = None;
                     last_bg = None;
-                    attr_set = false;
+                    last_attrs = Attrs::default();
+                    attrs_applied = false;
                 }
 
-                // Set dim attribute for unfocused panes
-                if !focused && !attr_set {
-                    queue!(writer, SetAttribute(Attribute::Dim))?;
-                    attr_set = true;
-                } else if focused && attr_set {
+                // Check if we need to update attributes or colors
+                let attrs_changed = cell.attrs != last_attrs;
+                let colors_changed = cell.fg != last_fg || cell.bg != last_bg;
+
+                if attrs_changed || colors_changed || !attrs_applied {
+                    // Reset all attributes first
                     queue!(writer, SetAttribute(Attribute::Reset))?;
-                    attr_set = false;
-                }
-
-                // Only emit color changes when needed
-                if cell.fg != last_fg || cell.bg != last_bg {
                     queue!(writer, ResetColor)?;
-                    if !focused {
+
+                    // Apply cell attributes
+                    if cell.attrs.has(Attrs::BOLD) {
+                        queue!(writer, SetAttribute(Attribute::Bold))?;
+                    }
+                    if cell.attrs.has(Attrs::DIM) || !focused {
                         queue!(writer, SetAttribute(Attribute::Dim))?;
                     }
+                    if cell.attrs.has(Attrs::ITALIC) {
+                        queue!(writer, SetAttribute(Attribute::Italic))?;
+                    }
+                    if cell.attrs.has(Attrs::UNDERLINE) {
+                        queue!(writer, SetAttribute(Attribute::Underlined))?;
+                    }
+                    if cell.attrs.has(Attrs::REVERSE) {
+                        queue!(writer, SetAttribute(Attribute::Reverse))?;
+                    }
+                    if cell.attrs.has(Attrs::STRIKETHROUGH) {
+                        queue!(writer, SetAttribute(Attribute::CrossedOut))?;
+                    }
+
+                    // Apply colors
                     if let Some(fg) = cell.fg {
                         queue!(writer, SetForegroundColor(fg))?;
                     }
                     if let Some(bg) = cell.bg {
                         queue!(writer, SetBackgroundColor(bg))?;
                     }
+
                     last_fg = cell.fg;
                     last_bg = cell.bg;
+                    last_attrs = cell.attrs;
+                    attrs_applied = true;
                 }
 
                 write!(writer, "{}", cell.ch)?;
@@ -825,9 +984,9 @@ impl Compositor {
             need_move = true;
         }
 
-        if attr_set {
-            queue!(writer, SetAttribute(Attribute::Reset))?;
-        }
+        // Reset attributes at end
+        queue!(writer, SetAttribute(Attribute::Reset))?;
+        queue!(writer, ResetColor)?;
 
         Ok(())
     }

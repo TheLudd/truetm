@@ -7,7 +7,7 @@ mod tag;
 
 use anyhow::{Context, Result};
 use crossterm::{
-    cursor::{MoveTo, Show},
+    cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute, queue,
     style::ResetColor,
@@ -461,6 +461,9 @@ impl App {
 
         let mut stdout = io::stdout();
 
+        // Hide cursor during rendering to avoid ghost cursor
+        queue!(stdout, Hide)?;
+
         // Get visible panes and focused pane
         let visible_ids = self.panes.visible_in_view(self.current_view);
         let focused_id = self.panes.focused().map(|p| p.id);
@@ -515,8 +518,16 @@ impl App {
             if visible_ids.contains(&pane.id) && pane.rect.width > 0 && pane.rect.height > 0 {
                 if let Some(buffer) = self.buffers.get(&pane.id) {
                     let (cx, cy) = buffer.cursor();
+                    // Clamp cursor to content area bounds
+                    let content_height = pane.rect.height.saturating_sub(1);
+                    let clamped_cx = cx.min(pane.rect.width.saturating_sub(1));
+                    let clamped_cy = cy.min(content_height.saturating_sub(1));
                     // +1 to account for header row
-                    queue!(stdout, MoveTo(pane.rect.x + cx, pane.rect.y + 1 + cy), Show)?;
+                    queue!(stdout, MoveTo(pane.rect.x + clamped_cx, pane.rect.y + 1 + clamped_cy))?;
+                    // Only show cursor if the application wants it visible
+                    if buffer.cursor_visible() {
+                        queue!(stdout, Show)?;
+                    }
                 }
             }
         }
@@ -695,6 +706,7 @@ fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
         }
         KeyCode::Enter => bytes.push(b'\r'),
         KeyCode::Tab => bytes.push(b'\t'),
+        KeyCode::BackTab => bytes.extend(b"\x1b[Z"), // Shift+Tab
         KeyCode::Backspace => bytes.push(0x7f),
         KeyCode::Esc => bytes.push(0x1b),
         KeyCode::Up => bytes.extend(b"\x1b[A"),
