@@ -35,6 +35,9 @@ Decrease master area width.
 .B Ctrl+B l
 Increase master area width.
 .TP
+.B Ctrl+B z
+Toggle zoom (fullscreen the focused window).
+.TP
 .B Ctrl+B 1-9
 Focus window by number.
 .TP
@@ -56,6 +59,99 @@ Set tag N on the focused window, removing other tags.
 .TP
 .B Ctrl+B T N
 Toggle tag N on the focused window.
+.SS Copy Mode
+Enter copy mode with
+.B Ctrl+B [
+to navigate scrollback and copy text. Supports vim-style navigation with
+numeric counts (e.g., 5j moves 5 lines down).
+.TP
+.B h/j/k/l
+Move cursor left/down/up/right.
+.TP
+.B 0
+Move to start of line.
+.TP
+.B $
+Move to end of line.
+.TP
+.B ^
+Move to first non-blank character.
+.TP
+.B w/W
+Move to start of next word/WORD.
+.TP
+.B b/B
+Move to start of previous word/WORD.
+.TP
+.B e/E
+Move to end of word/WORD.
+.TP
+.B g
+Go to top of scrollback.
+.TP
+.B G
+Go to bottom (live view).
+.TP
+.B H/M/L
+Move to top/middle/bottom of screen.
+.TP
+.B PgUp/PgDown
+Page up/down.
+.TP
+.B /
+Search forward (regex).
+.TP
+.B ?
+Search backward (regex).
+.TP
+.B n/N
+Jump to next/previous search match.
+.TP
+.B f/F
+Find character forward/backward.
+.TP
+.B t/T
+Find character forward/backward (till, stops before char).
+.TP
+.B ;
+Repeat last find.
+.TP
+.B ,
+Repeat last find in reverse direction.
+.TP
+.B v
+Start character-wise visual selection.
+.TP
+.B V
+Start line-wise visual selection.
+.TP
+.B iw, aw
+Select inner/around word.
+.TP
+.B i", a"
+Select inside/around double quotes.
+.TP
+.B i(, a(
+Select inside/around parentheses.
+.TP
+.B i[, a[
+Select inside/around brackets.
+.TP
+.B i{, a{
+Select inside/around braces.
+.TP
+.B y
+Yank (copy) selection to clipboard.
+.TP
+.B q, Esc
+Exit copy mode.
+.SH MOUSE
+.TP
+.B Click and drag
+Select text within a pane.
+.TP
+.B Scroll wheel
+Scroll through scrollback buffer (enters copy mode automatically).
 .SH LAYOUT
 Master window on the left, remaining windows stacked vertically on the right.
 .SH TAGS
@@ -69,6 +165,9 @@ previously visited tag.
 When broadcast mode is enabled (toggle with Ctrl+B a), all keyboard input is
 sent to every visible window simultaneously. This is useful for running the
 same commands across multiple terminals.
+.SH SCROLLBACK
+Each window stores up to 10,000 lines of scrollback history, accessible via
+copy mode or mouse scroll.
 .SH CONFIGURATION
 truetm follows the dwm philosophy of compile-time configuration. Edit
 src/config.rs and recompile to customize keybindings and settings.

@@ -140,6 +140,13 @@ Enter copy mode with `Ctrl+B [`. Supports numeric counts (e.g., `5j` to move 5 l
 
 Scrollback stores up to 10,000 lines of history per window.
 
+### Mouse
+
+| Action         | Effect                                      |
+| -------------- | ------------------------------------------- |
+| Click and drag | Select text within a pane                   |
+| Scroll wheel   | Scroll through scrollback (enters copy mode)|
+
 ## Configuration
 
 truetm follows the dwm philosophy: configuration is done at compile time by editing `src/config.rs`. This file contains all keybindings and settings in a readable format.
