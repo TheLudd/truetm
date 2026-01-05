@@ -80,9 +80,12 @@ Tags work like virtual desktops but more flexible:
 
 ### Copy Mode (Vim-style Scrollback)
 
+Enter copy mode with `Ctrl+B [`. Supports numeric counts (e.g., `5j` to move 5 lines down).
+
+#### Basic Movement
+
 | Key           | Action                              |
 | ------------- | ----------------------------------- |
-| `Ctrl+B [`    | Enter copy mode                     |
 | `h/j/k/l`     | Move cursor left/down/up/right      |
 | `0`           | Move to start of line               |
 | `$`           | Move to end of line                 |
@@ -91,10 +94,49 @@ Tags work like virtual desktops but more flexible:
 | `G`           | Go to bottom (live view)            |
 | `H/M/L`       | Move to top/middle/bottom of screen |
 | `PgUp/PgDown` | Page up/down                        |
-| `v`           | Start character-wise visual select  |
-| `V`           | Start line-wise visual select       |
-| `y`           | Yank (copy) selection to clipboard  |
-| `q` / `Esc`   | Exit copy mode                      |
+
+#### Word Motions
+
+| Key   | Action                              |
+| ----- | ----------------------------------- |
+| `w/W` | Move to start of next word/WORD     |
+| `b/B` | Move to start of previous word/WORD |
+| `e/E` | Move to end of word/WORD            |
+
+#### Search
+
+| Key   | Action                         |
+| ----- | ------------------------------ |
+| `/`   | Search forward (regex)         |
+| `?`   | Search backward (regex)        |
+| `n`   | Jump to next match             |
+| `N`   | Jump to previous match         |
+| `f/F` | Find char forward/backward     |
+| `t/T` | Find char (till) forward/back  |
+| `;`   | Repeat last find               |
+| `,`   | Repeat last find (reverse)     |
+
+#### Visual Mode & Text Objects
+
+| Key   | Action                              |
+| ----- | ----------------------------------- |
+| `v`   | Start character-wise visual select  |
+| `V`   | Start line-wise visual select       |
+| `y`   | Yank (copy) selection to clipboard  |
+| `iw`  | Select inner word                   |
+| `aw`  | Select around word (includes space) |
+| `i"`  | Select inside quotes                |
+| `a"`  | Select around quotes                |
+| `i(`  | Select inside parentheses           |
+| `a(`  | Select around parentheses           |
+| `i[`  | Select inside brackets              |
+| `i{`  | Select inside braces                |
+
+#### Exit
+
+| Key         | Action         |
+| ----------- | -------------- |
+| `q` / `Esc` | Exit copy mode |
 
 Scrollback stores up to 10,000 lines of history per window.
 

@@ -606,6 +606,47 @@ impl App {
                 return Ok(());
             }
 
+            // Check if we're in pending text object mode (i/a waiting for object type)
+            let pending_text_object = self.copy_mode.as_ref()
+                .map(|c| c.pending_text_object.is_some())
+                .unwrap_or(false);
+
+            // Handle pending text object (i/a waiting for object type like w, ", (, etc.)
+            if pending_text_object {
+                if let KeyCode::Char(c) = key.code {
+                    // Valid text object types: w, W, ", ', `, (, ), b, [, ], {, }, B, <, >
+                    match c {
+                        'w' | 'W' | '"' | '\'' | '`' | '(' | ')' | 'b' | '[' | ']' | '{' | '}' | 'B' | '<' | '>' => {
+                            if let Some(pane) = self.panes.focused() {
+                                if let Some(buffer) = self.buffers.get(&pane.id) {
+                                    if let Some(ref copy_state) = self.copy_mode {
+                                        let line = self.get_line_content(buffer, copy_state.cursor.y);
+                                        if let Some(ref mut cs) = self.copy_mode {
+                                            cs.select_text_object(c, &line);
+                                            cs.reset_count();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            // Invalid object type, cancel
+                            if let Some(ref mut cs) = self.copy_mode {
+                                cs.pending_text_object = None;
+                                cs.reset_count();
+                            }
+                        }
+                    }
+                } else if key.code == KeyCode::Esc {
+                    if let Some(ref mut copy_state) = self.copy_mode {
+                        copy_state.pending_text_object = None;
+                    }
+                }
+                self.compositor.invalidate();
+                self.needs_redraw = true;
+                return Ok(());
+            }
+
             if let Some(ref mut copy_state) = self.copy_mode {
                 let count = copy_state.get_count();
 
@@ -773,6 +814,14 @@ impl App {
                     }
                     KeyCode::Char(',') => {
                         do_repeat_find_reverse = true;
+                    }
+
+                    // Text objects: i (inner), a (around)
+                    KeyCode::Char('i') => {
+                        copy_state.start_text_object(copy_mode::TextObjectModifier::Inner);
+                    }
+                    KeyCode::Char('a') => {
+                        copy_state.start_text_object(copy_mode::TextObjectModifier::Around);
                     }
 
                     _ => {
@@ -1334,6 +1383,12 @@ impl App {
                 write!(stdout, " {}{}", prompt, copy_state.search_input)?;
             } else if copy_state.pending_find.is_some() {
                 write!(stdout, " find:")?;
+            } else if let Some(ref modifier) = copy_state.pending_text_object {
+                let mod_char = match modifier {
+                    copy_mode::TextObjectModifier::Inner => 'i',
+                    copy_mode::TextObjectModifier::Around => 'a',
+                };
+                write!(stdout, " {}:", mod_char)?;
             } else {
                 let mode_str = match copy_state.visual_mode {
                     copy_mode::VisualMode::None => "COPY",

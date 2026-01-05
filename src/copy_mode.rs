@@ -18,6 +18,13 @@ pub struct FindChar {
     pub inclusive: bool, // f/F = true (on char), t/T = false (before/after char)
 }
 
+/// Text object modifier (i = inner, a = around)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextObjectModifier {
+    Inner, // i
+    Around, // a
+}
+
 /// Character classification for word motions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CharClass {
@@ -111,6 +118,7 @@ pub struct CopyModeState {
     pub last_search: Option<(String, bool)>, // (pattern, forward)
     pub last_find: Option<FindChar>,
     pub pending_find: Option<(bool, bool)>, // (forward, inclusive) - waiting for char
+    pub pending_text_object: Option<TextObjectModifier>, // i or a, waiting for object type
 }
 
 impl CopyModeState {
@@ -130,6 +138,7 @@ impl CopyModeState {
             last_search: None,
             last_find: None,
             pending_find: None,
+            pending_text_object: None,
         }
     }
 
@@ -689,6 +698,209 @@ impl CopyModeState {
 
         false
     }
+
+    // === Text Object Methods ===
+
+    /// Start waiting for text object type
+    pub fn start_text_object(&mut self, modifier: TextObjectModifier) {
+        self.pending_text_object = Some(modifier);
+    }
+
+    /// Select a text object and enter visual mode if not already
+    /// Returns true if selection was successful
+    pub fn select_text_object(&mut self, obj_type: char, line_content: &[char]) -> bool {
+        let modifier = match self.pending_text_object.take() {
+            Some(m) => m,
+            None => return false,
+        };
+
+        let inner = modifier == TextObjectModifier::Inner;
+
+        match obj_type {
+            'w' => self.select_word_object(line_content, inner, false),
+            'W' => self.select_word_object(line_content, inner, true),
+            '"' => self.select_quote_object(line_content, inner, '"'),
+            '\'' => self.select_quote_object(line_content, inner, '\''),
+            '`' => self.select_quote_object(line_content, inner, '`'),
+            '(' | ')' | 'b' => self.select_bracket_object(line_content, inner, '(', ')'),
+            '[' | ']' => self.select_bracket_object(line_content, inner, '[', ']'),
+            '{' | '}' | 'B' => self.select_bracket_object(line_content, inner, '{', '}'),
+            '<' | '>' => self.select_bracket_object(line_content, inner, '<', '>'),
+            _ => false,
+        }
+    }
+
+    fn select_word_object(&mut self, line_content: &[char], inner: bool, big_word: bool) -> bool {
+        let classify = if big_word { CharClass::of_word } else { CharClass::of };
+        let x = self.cursor.x as usize;
+        let len = line_content.len();
+
+        if x >= len {
+            return false;
+        }
+
+        let current_class = classify(line_content[x]);
+
+        // Find start of word
+        let mut start = x;
+        while start > 0 && classify(line_content[start - 1]) == current_class {
+            start -= 1;
+        }
+
+        // Find end of word
+        let mut end = x;
+        while end + 1 < len && classify(line_content[end + 1]) == current_class {
+            end += 1;
+        }
+
+        // For "around", include trailing whitespace (or leading if at end of line)
+        if !inner {
+            // Try trailing whitespace first
+            let mut trailing_end = end;
+            while trailing_end + 1 < len && line_content[trailing_end + 1].is_whitespace() {
+                trailing_end += 1;
+            }
+            if trailing_end > end {
+                end = trailing_end;
+            } else {
+                // No trailing whitespace, try leading
+                while start > 0 && line_content[start - 1].is_whitespace() {
+                    start -= 1;
+                }
+            }
+        }
+
+        // Enter visual mode and set selection
+        self.visual_mode = VisualMode::Char;
+        self.cursor = BufferPos::new(start as u16, self.cursor.y);
+        self.selection = Some(Selection {
+            anchor: BufferPos::new(start as u16, self.cursor.y),
+            cursor: BufferPos::new(end as u16, self.cursor.y),
+        });
+        self.cursor = BufferPos::new(end as u16, self.cursor.y);
+
+        true
+    }
+
+    fn select_quote_object(&mut self, line_content: &[char], inner: bool, quote: char) -> bool {
+        let x = self.cursor.x as usize;
+        let len = line_content.len();
+
+        // Find opening quote (backward from cursor or at cursor)
+        let mut open_pos = None;
+        for i in (0..=x).rev() {
+            if line_content[i] == quote {
+                open_pos = Some(i);
+                break;
+            }
+        }
+
+        let open = match open_pos {
+            Some(p) => p,
+            None => return false,
+        };
+
+        // Find closing quote (forward from opening)
+        let mut close_pos = None;
+        for i in (open + 1)..len {
+            if line_content[i] == quote {
+                close_pos = Some(i);
+                break;
+            }
+        }
+
+        let close = match close_pos {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let (start, end) = if inner {
+            (open + 1, close.saturating_sub(1))
+        } else {
+            (open, close)
+        };
+
+        if start > end {
+            return false;
+        }
+
+        // Enter visual mode and set selection
+        self.visual_mode = VisualMode::Char;
+        self.cursor = BufferPos::new(start as u16, self.cursor.y);
+        self.selection = Some(Selection {
+            anchor: BufferPos::new(start as u16, self.cursor.y),
+            cursor: BufferPos::new(end as u16, self.cursor.y),
+        });
+        self.cursor = BufferPos::new(end as u16, self.cursor.y);
+
+        true
+    }
+
+    fn select_bracket_object(&mut self, line_content: &[char], inner: bool, open: char, close: char) -> bool {
+        let x = self.cursor.x as usize;
+        let len = line_content.len();
+
+        // Find opening bracket (backward, handling nesting)
+        let mut open_pos = None;
+        let mut depth = 0;
+        for i in (0..=x).rev() {
+            if line_content[i] == close && i != x {
+                depth += 1;
+            } else if line_content[i] == open {
+                if depth == 0 {
+                    open_pos = Some(i);
+                    break;
+                }
+                depth -= 1;
+            }
+        }
+
+        let open_idx = match open_pos {
+            Some(p) => p,
+            None => return false,
+        };
+
+        // Find closing bracket (forward, handling nesting)
+        let mut close_pos = None;
+        let mut depth = 0;
+        for i in (open_idx + 1)..len {
+            if line_content[i] == open {
+                depth += 1;
+            } else if line_content[i] == close {
+                if depth == 0 {
+                    close_pos = Some(i);
+                    break;
+                }
+                depth -= 1;
+            }
+        }
+
+        let close_idx = match close_pos {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let (start, end) = if inner {
+            (open_idx + 1, close_idx.saturating_sub(1))
+        } else {
+            (open_idx, close_idx)
+        };
+
+        if start > end {
+            return false;
+        }
+
+        // Enter visual mode and set selection
+        self.visual_mode = VisualMode::Char;
+        self.cursor = BufferPos::new(start as u16, self.cursor.y);
+        self.selection = Some(Selection {
+            anchor: BufferPos::new(start as u16, self.cursor.y),
+            cursor: BufferPos::new(end as u16, self.cursor.y),
+        });
+        self.cursor = BufferPos::new(end as u16, self.cursor.y);
+
+        true
+    }
 }
 
 #[cfg(test)]
@@ -876,5 +1088,53 @@ mod tests {
         assert!(!state.is_selected(11, 10));
         assert!(!state.is_selected(5, 9));
         assert!(!state.is_selected(5, 11));
+    }
+
+    #[test]
+    fn test_text_object_word() {
+        let mut state = CopyModeState::new(80, 24, 100);
+        let line: Vec<char> = "hello world foo".chars().collect();
+
+        // Position cursor in middle of "world"
+        state.cursor = BufferPos::new(8, 0);
+        state.start_text_object(TextObjectModifier::Inner);
+        assert!(state.select_text_object('w', &line));
+
+        // Should select "world" (positions 6-10)
+        let bounds = state.get_selection_bounds().unwrap();
+        assert_eq!(bounds.0, 6); // start x
+        assert_eq!(bounds.2, 10); // end x
+    }
+
+    #[test]
+    fn test_text_object_quotes() {
+        let mut state = CopyModeState::new(80, 24, 100);
+        let line: Vec<char> = r#"say "hello world" now"#.chars().collect();
+
+        // Position cursor inside the quoted string
+        state.cursor = BufferPos::new(8, 0);
+        state.start_text_object(TextObjectModifier::Inner);
+        assert!(state.select_text_object('"', &line));
+
+        // Should select "hello world" (inside quotes)
+        let bounds = state.get_selection_bounds().unwrap();
+        assert_eq!(bounds.0, 5); // start x (after opening quote)
+        assert_eq!(bounds.2, 15); // end x (before closing quote)
+    }
+
+    #[test]
+    fn test_text_object_brackets() {
+        let mut state = CopyModeState::new(80, 24, 100);
+        let line: Vec<char> = "func(arg1, arg2)".chars().collect();
+
+        // Position cursor inside parens
+        state.cursor = BufferPos::new(8, 0);
+        state.start_text_object(TextObjectModifier::Around);
+        assert!(state.select_text_object('(', &line));
+
+        // Should select "(arg1, arg2)" including parens
+        let bounds = state.get_selection_bounds().unwrap();
+        assert_eq!(bounds.0, 4); // start x (opening paren)
+        assert_eq!(bounds.2, 15); // end x (closing paren)
     }
 }
