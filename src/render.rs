@@ -1226,6 +1226,7 @@ impl Compositor {
     }
 
     /// Render a pane's buffer to the given rect with differential updates
+    /// selection: Optional (start_x, start_y, end_x, end_y) in buffer coordinates
     pub fn render_pane<W: Write>(
         &mut self,
         writer: &mut W,
@@ -1233,12 +1234,23 @@ impl Compositor {
         rect: Rect,
         focused: bool,
         scroll_offset: usize,
+        selection: Option<(u16, u16, u16, u16)>,
     ) -> std::io::Result<()> {
         use crossterm::style::{Attribute, SetAttribute};
+
+        // Normalize selection bounds if present
+        let sel_bounds = selection.map(|(sx, sy, ex, ey)| {
+            if sy < ey || (sy == ey && sx <= ex) {
+                (sx, sy, ex, ey)
+            } else {
+                (ex, ey, sx, sy)
+            }
+        });
 
         let mut last_fg: Option<Color> = None;
         let mut last_bg: Option<Color> = None;
         let mut last_attrs = Attrs::default();
+        let mut last_selected = false;
         let mut need_move = true;
         let mut attrs_applied = false;
 
@@ -1249,11 +1261,26 @@ impl Compositor {
                 let screen_x = rect.x + x;
                 let cell = buffer.get_scrolled(x, y, scroll_offset);
 
+                // Check if this cell is selected
+                let is_selected = sel_bounds.map(|(sx, sy, ex, ey)| {
+                    if y < sy || y > ey {
+                        false
+                    } else if y == sy && y == ey {
+                        x >= sx && x <= ex
+                    } else if y == sy {
+                        x >= sx
+                    } else if y == ey {
+                        x <= ex
+                    } else {
+                        true
+                    }
+                }).unwrap_or(false);
+
                 // Check if this cell needs updating
                 let screen_idx = (screen_y as usize) * (self.width as usize) + (screen_x as usize);
                 if screen_idx < self.last_frame.len() {
                     let last = &self.last_frame[screen_idx];
-                    if last.cell == cell && last.focused == focused {
+                    if last.cell == cell && last.focused == focused && !is_selected && !last_selected {
                         // Cell unchanged, skip it
                         need_move = true;
                         continue;
@@ -1274,8 +1301,9 @@ impl Compositor {
                 // Check if we need to update attributes or colors
                 let attrs_changed = cell.attrs != last_attrs;
                 let colors_changed = cell.fg != last_fg || cell.bg != last_bg;
+                let selection_changed = is_selected != last_selected;
 
-                if attrs_changed || colors_changed || !attrs_applied {
+                if attrs_changed || colors_changed || selection_changed || !attrs_applied {
                     // Reset all attributes first
                     queue!(writer, SetAttribute(Attribute::Reset))?;
                     queue!(writer, ResetColor)?;
@@ -1293,7 +1321,8 @@ impl Compositor {
                     if cell.attrs.has(Attrs::UNDERLINE) {
                         queue!(writer, SetAttribute(Attribute::Underlined))?;
                     }
-                    if cell.attrs.has(Attrs::REVERSE) {
+                    if cell.attrs.has(Attrs::REVERSE) || is_selected {
+                        // Use reverse for selection highlighting
                         queue!(writer, SetAttribute(Attribute::Reverse))?;
                     }
                     if cell.attrs.has(Attrs::STRIKETHROUGH) {
@@ -1311,6 +1340,7 @@ impl Compositor {
                     last_fg = cell.fg;
                     last_bg = cell.bg;
                     last_attrs = cell.attrs;
+                    last_selected = is_selected;
                     attrs_applied = true;
                 }
 

@@ -10,8 +10,9 @@ use anyhow::{Context, Result};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{
-        self, Event, KeyCode, KeyEvent, KeyModifiers,
+        self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton,
         KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        EnableMouseCapture, DisableMouseCapture,
     },
     execute, queue,
     style::ResetColor,
@@ -32,6 +33,7 @@ fn main() -> Result<()> {
     let result = run();
 
     // Cleanup
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     let _ = terminal::disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen, ResetColor);
@@ -45,6 +47,17 @@ enum PendingCommand {
     ViewTag,    // 'v' - waiting for tag number
     SetTag,     // 't' - waiting for tag number
     ToggleTag,  // 'T' - waiting for tag number
+}
+
+/// Mouse selection state
+#[derive(Debug, Clone)]
+struct MouseSelection {
+    pane_id: PaneId,
+    // Buffer coordinates (relative to pane content area)
+    buf_start_x: u16,
+    buf_start_y: u16,
+    buf_end_x: u16,
+    buf_end_y: u16,
 }
 
 /// Application state
@@ -75,6 +88,8 @@ struct App {
     scroll_offset: usize,
     // Zoom mode - focused pane is fullscreen
     zoomed_pane: Option<PaneId>,
+    // Mouse selection
+    mouse_selection: Option<MouseSelection>,
 }
 
 impl App {
@@ -118,6 +133,7 @@ impl App {
             scroll_mode: false,
             scroll_offset: 0,
             zoomed_pane: None,
+            mouse_selection: None,
         }
     }
 
@@ -590,6 +606,164 @@ impl App {
         Ok(())
     }
 
+    /// Handle mouse input
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+        let x = mouse.column;
+        let y = mouse.row;
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Find which pane was clicked
+                if let Some((pane_id, buf_x, buf_y)) = self.pane_at_position(x, y) {
+                    // Start selection
+                    self.mouse_selection = Some(MouseSelection {
+                        pane_id,
+                        buf_start_x: buf_x,
+                        buf_start_y: buf_y,
+                        buf_end_x: buf_x,
+                        buf_end_y: buf_y,
+                    });
+                    // Focus the clicked pane
+                    self.panes.focus_by_id(pane_id);
+                    self.needs_redraw = true;
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                // Extend selection - check position first, then update selection
+                let pos_info = self.pane_at_position(x, y);
+                if let Some(ref mut sel) = self.mouse_selection {
+                    if let Some((pane_id, buf_x, buf_y)) = pos_info {
+                        if pane_id == sel.pane_id {
+                            sel.buf_end_x = buf_x;
+                            sel.buf_end_y = buf_y;
+                            self.needs_redraw = true;
+                        }
+                    }
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                // Finish selection and copy to clipboard
+                if let Some(sel) = self.mouse_selection.take() {
+                    if sel.buf_start_x != sel.buf_end_x || sel.buf_start_y != sel.buf_end_y {
+                        // Extract selected text and copy
+                        if let Some(text) = self.extract_selection(&sel) {
+                            self.copy_to_clipboard(&text)?;
+                        }
+                    }
+                    self.needs_redraw = true;
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                // Scroll focused pane up (into history)
+                if !self.scroll_mode {
+                    self.scroll_mode = true;
+                    self.scroll_offset = 0;
+                }
+                if let Some(pane) = self.panes.focused() {
+                    if let Some(buffer) = self.buffers.get(&pane.id) {
+                        let max_offset = buffer.scrollback_len();
+                        if self.scroll_offset < max_offset {
+                            self.scroll_offset += 3;
+                            self.scroll_offset = self.scroll_offset.min(max_offset);
+                            self.compositor.invalidate();
+                            self.needs_redraw = true;
+                        }
+                    }
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                // Scroll focused pane down (towards live)
+                if self.scroll_mode && self.scroll_offset > 0 {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(3);
+                    if self.scroll_offset == 0 {
+                        self.scroll_mode = false;
+                    }
+                    self.compositor.invalidate();
+                    self.needs_redraw = true;
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    /// Find which pane contains a screen position, return pane ID and buffer coordinates
+    fn pane_at_position(&self, x: u16, y: u16) -> Option<(PaneId, u16, u16)> {
+        let visible_ids = self.panes.visible_in_view(self.current_view);
+        for &pane_id in &visible_ids {
+            if let Some(pane) = self.panes.get(pane_id) {
+                // Check if position is within pane's content area (excluding header)
+                let content_y_start = pane.rect.y + 1; // Skip header row
+                let content_y_end = pane.rect.y + pane.rect.height;
+                if x >= pane.rect.x && x < pane.rect.x + pane.rect.width
+                    && y >= content_y_start && y < content_y_end
+                {
+                    let buf_x = x - pane.rect.x;
+                    let buf_y = y - content_y_start;
+                    return Some((pane_id, buf_x, buf_y));
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract selected text from a pane's buffer
+    fn extract_selection(&self, sel: &MouseSelection) -> Option<String> {
+        let buffer = self.buffers.get(&sel.pane_id)?;
+
+        // Normalize selection (ensure start <= end)
+        let (start_y, start_x, end_y, end_x) = if sel.buf_start_y < sel.buf_end_y
+            || (sel.buf_start_y == sel.buf_end_y && sel.buf_start_x <= sel.buf_end_x)
+        {
+            (sel.buf_start_y, sel.buf_start_x, sel.buf_end_y, sel.buf_end_x)
+        } else {
+            (sel.buf_end_y, sel.buf_end_x, sel.buf_start_y, sel.buf_start_x)
+        };
+
+        let mut result = String::new();
+        for y in start_y..=end_y {
+            let line_start = if y == start_y { start_x } else { 0 };
+            let line_end = if y == end_y { end_x } else { buffer.width().saturating_sub(1) };
+
+            for x in line_start..=line_end {
+                let cell = buffer.get(x, y);
+                result.push(cell.ch);
+            }
+            // Trim trailing spaces from each line
+            if y < end_y {
+                while result.ends_with(' ') {
+                    result.pop();
+                }
+                result.push('\n');
+            }
+        }
+        // Trim trailing spaces from last line
+        while result.ends_with(' ') {
+            result.pop();
+        }
+
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
+    /// Copy text to clipboard via OSC 52
+    fn copy_to_clipboard(&mut self, text: &str) -> Result<()> {
+        // OSC 52: ESC ] 52 ; c ; <base64> BEL
+        // We write this to stdout since we want the outer terminal (st) to receive it
+        let encoded = base64_encode(text);
+        let osc52 = format!("\x1b]52;c;{}\x07", encoded);
+
+        let mut stdout = io::stdout();
+        write!(stdout, "{}", osc52)?;
+        stdout.flush()?;
+
+        Ok(())
+    }
+
     /// Render the screen
     fn render(&mut self) -> Result<()> {
         if !self.needs_redraw {
@@ -624,7 +798,11 @@ impl App {
                     );
                     // Only apply scroll offset to focused pane in scroll mode
                     let offset = if self.scroll_mode && is_focused { self.scroll_offset } else { 0 };
-                    self.compositor.render_pane(&mut stdout, buffer, content_rect, is_focused, offset)?;
+                    // Get selection bounds for this pane
+                    let selection = self.mouse_selection.as_ref()
+                        .filter(|s| s.pane_id == pane.id)
+                        .map(|s| (s.buf_start_x, s.buf_start_y, s.buf_end_x, s.buf_end_y));
+                    self.compositor.render_pane(&mut stdout, buffer, content_rect, is_focused, offset, selection)?;
                     // Draw window header with number and title
                     self.draw_window_header(&mut stdout, pane.rect, win_num + 1, buffer.title(), is_focused)?;
                 }
@@ -823,6 +1001,9 @@ fn run() -> Result<()> {
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     );
 
+    // Enable mouse capture for pane-isolated selection
+    execute!(io::stdout(), EnableMouseCapture)?;
+
     // Frame timing - target ~60fps max, but render immediately if idle
     let frame_duration = Duration::from_micros(16667); // ~60fps
     let mut last_render = Instant::now();
@@ -850,6 +1031,7 @@ fn run() -> Result<()> {
         if event::poll(poll_timeout)? {
             match event::read()? {
                 Event::Key(key) => app.handle_key(key)?,
+                Event::Mouse(mouse) => app.handle_mouse(mouse)?,
                 Event::Resize(w, h) => app.resize(w, h)?,
                 _ => {}
             }
@@ -1017,4 +1199,37 @@ fn f_key_sequence(n: u8, modifier: u8, has_modifier: bool) -> Vec<u8> {
         }
         _ => Vec::new(),
     }
+}
+
+/// Simple base64 encoder for OSC 52 clipboard
+fn base64_encode(input: &str) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let bytes = input.as_bytes();
+    let mut result = String::new();
+
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+
+        let n = (b0 << 16) | (b1 << 8) | b2;
+
+        result.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
+        result.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+
+        if chunk.len() > 1 {
+            result.push(ALPHABET[((n >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+
+        if chunk.len() > 2 {
+            result.push(ALPHABET[(n & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+
+    result
 }
