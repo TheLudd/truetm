@@ -78,20 +78,25 @@ Tags work like virtual desktops but more flexible:
 - A window can have multiple tags (appear in multiple views)
 - Closing the last window in a tag returns to the previously visited tag
 
-### Scrollback
+### Copy Mode (Vim-style Scrollback)
 
-| Key           | Action                         |
-| ------------- | ------------------------------ |
-| `Ctrl+B [`    | Enter scroll mode              |
-| `k` / `Up`    | Scroll up one line             |
-| `j` / `Down`  | Scroll down one line           |
-| `PgUp`        | Scroll up half page            |
-| `PgDown`      | Scroll down half page          |
-| `g`           | Go to top of scrollback        |
-| `G`           | Go to bottom (live view)       |
-| `q` / `Esc`   | Exit scroll mode               |
+| Key           | Action                              |
+| ------------- | ----------------------------------- |
+| `Ctrl+B [`    | Enter copy mode                     |
+| `h/j/k/l`     | Move cursor left/down/up/right      |
+| `0`           | Move to start of line               |
+| `$`           | Move to end of line                 |
+| `^`           | Move to first non-blank character   |
+| `g`           | Go to top of scrollback             |
+| `G`           | Go to bottom (live view)            |
+| `H/M/L`       | Move to top/middle/bottom of screen |
+| `PgUp/PgDown` | Page up/down                        |
+| `v`           | Start character-wise visual select  |
+| `V`           | Start line-wise visual select       |
+| `y`           | Yank (copy) selection to clipboard  |
+| `q` / `Esc`   | Exit copy mode                      |
 
-Scrollback stores up to 1000 lines of history per window.
+Scrollback stores up to 10,000 lines of history per window.
 
 ## Configuration
 

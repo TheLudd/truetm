@@ -1,6 +1,7 @@
 //! dvtr - A truecolor-enabled terminal multiplexer inspired by dvtm
 
 mod config;
+mod copy_mode;
 mod layout;
 mod pane;
 mod render;
@@ -21,6 +22,7 @@ use crossterm::{
 use layout::LayoutManager;
 use pane::{Pane, PaneId, PaneManager, PtyMessage, Rect};
 use render::{Compositor, ScreenBuffer};
+use copy_mode::CopyModeState;
 use tag::TagSet;
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -83,9 +85,8 @@ struct App {
     tag_history: Vec<u8>,
     // Broadcast mode - send input to all visible panes
     broadcast_mode: bool,
-    // Scroll mode - viewing scrollback
-    scroll_mode: bool,
-    scroll_offset: usize,
+    // Copy mode - vim-style scrollback navigation and selection
+    copy_mode: Option<CopyModeState>,
     // Zoom mode - focused pane is fullscreen
     zoomed_pane: Option<PaneId>,
     // Mouse selection
@@ -130,8 +131,7 @@ impl App {
             tag_count: 9,
             tag_history: vec![0], // Start with tag 0 in history
             broadcast_mode: false,
-            scroll_mode: false,
-            scroll_offset: 0,
+            copy_mode: None,
             zoomed_pane: None,
             mouse_selection: None,
         }
@@ -493,11 +493,19 @@ impl App {
                     self.broadcast_mode = !self.broadcast_mode;
                     self.needs_redraw = true;
                 }
-                k if k == config::KEY_ENTER_SCROLL => {
-                    self.scroll_mode = true;
-                    self.scroll_offset = 0;
-                    self.compositor.invalidate();
-                    self.needs_redraw = true;
+                k if k == config::KEY_ENTER_COPY => {
+                    // Enter copy mode
+                    if let Some(pane) = self.panes.focused() {
+                        if let Some(buffer) = self.buffers.get(&pane.id) {
+                            self.copy_mode = Some(CopyModeState::new(
+                                buffer.width(),
+                                buffer.height(),
+                                buffer.scrollback_len(),
+                            ));
+                            self.compositor.invalidate();
+                            self.needs_redraw = true;
+                        }
+                    }
                 }
                 k if k == config::KEY_ZOOM => {
                     if let Some(focused) = self.panes.focused() {
@@ -518,71 +526,118 @@ impl App {
             return Ok(());
         }
 
-        // Handle scroll mode
-        if self.scroll_mode {
-            match key.code {
-                k if k == config::SCROLL_EXIT_1 || k == config::SCROLL_EXIT_2 => {
-                    self.scroll_mode = false;
-                    self.scroll_offset = 0;
-                    self.compositor.invalidate();
-                    self.needs_redraw = true;
-                }
-                k if k == config::SCROLL_DOWN_LINE_1 || k == config::SCROLL_DOWN_LINE_2 => {
-                    if self.scroll_offset > 0 {
-                        self.scroll_offset -= 1;
-                        self.compositor.invalidate();
-                        self.needs_redraw = true;
+        // Handle copy mode
+        if self.copy_mode.is_some() {
+            let mut exit_copy_mode = false;
+            let mut yank_selection = false;
+            let mut do_first_non_blank = false;
+
+            if let Some(ref mut copy_state) = self.copy_mode {
+                match key.code {
+                    // Exit: q or Esc
+                    k if k == config::COPY_EXIT_1 || k == config::COPY_EXIT_2 => {
+                        exit_copy_mode = true;
                     }
+
+                    // Basic movement: hjkl
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        copy_state.move_left();
+                    }
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        copy_state.move_right();
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        copy_state.move_up();
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        copy_state.move_down();
+                    }
+
+                    // Line navigation: 0, $, ^
+                    KeyCode::Char('0') => {
+                        copy_state.move_to_line_start();
+                    }
+                    KeyCode::Char('$') => {
+                        copy_state.move_to_line_end();
+                    }
+                    KeyCode::Char('^') => {
+                        do_first_non_blank = true;
+                    }
+
+                    // Buffer navigation: gg, G
+                    KeyCode::Char('g') => {
+                        copy_state.move_to_top();
+                    }
+                    KeyCode::Char('G') => {
+                        copy_state.move_to_bottom();
+                    }
+
+                    // Screen navigation: H, M, L
+                    KeyCode::Char('H') => {
+                        copy_state.move_to_screen_top();
+                    }
+                    KeyCode::Char('M') => {
+                        copy_state.move_to_screen_middle();
+                    }
+                    KeyCode::Char('L') => {
+                        copy_state.move_to_screen_bottom();
+                    }
+
+                    // Page navigation
+                    KeyCode::PageUp => {
+                        copy_state.page_up();
+                    }
+                    KeyCode::PageDown => {
+                        copy_state.page_down();
+                    }
+
+                    // Visual modes
+                    KeyCode::Char('v') => {
+                        copy_state.toggle_visual_char();
+                    }
+                    KeyCode::Char('V') => {
+                        copy_state.toggle_visual_line();
+                    }
+
+                    // Yank
+                    KeyCode::Char('y') => {
+                        if copy_state.visual_mode != copy_mode::VisualMode::None {
+                            yank_selection = true;
+                        }
+                    }
+
+                    _ => {}
                 }
-                k if k == config::SCROLL_UP_LINE_1 || k == config::SCROLL_UP_LINE_2 => {
-                    if let Some(pane) = self.panes.focused() {
-                        if let Some(buffer) = self.buffers.get(&pane.id) {
-                            let max_offset = buffer.scrollback_len();
-                            if self.scroll_offset < max_offset {
-                                self.scroll_offset += 1;
-                                self.compositor.invalidate();
-                                self.needs_redraw = true;
+            }
+
+            // Handle ^ motion (needs separate borrow for line content)
+            if do_first_non_blank {
+                if let Some(pane) = self.panes.focused() {
+                    if let Some(buffer) = self.buffers.get(&pane.id) {
+                        if let Some(ref copy_state) = self.copy_mode {
+                            let line = self.get_line_content(buffer, copy_state.cursor.y);
+                            if let Some(ref mut cs) = self.copy_mode {
+                                cs.move_to_first_non_blank(&line);
                             }
                         }
                     }
                 }
-                k if k == config::SCROLL_UP_PAGE => {
-                    if let Some(pane) = self.panes.focused() {
-                        if let Some(buffer) = self.buffers.get(&pane.id) {
-                            let max_offset = buffer.scrollback_len();
-                            let page_size = (buffer.height() / 2).max(1) as usize;
-                            self.scroll_offset = (self.scroll_offset + page_size).min(max_offset);
-                            self.compositor.invalidate();
-                            self.needs_redraw = true;
-                        }
-                    }
-                }
-                k if k == config::SCROLL_DOWN_PAGE => {
-                    if let Some(pane) = self.panes.focused() {
-                        if let Some(buffer) = self.buffers.get(&pane.id) {
-                            let page_size = (buffer.height() / 2).max(1) as usize;
-                            self.scroll_offset = self.scroll_offset.saturating_sub(page_size);
-                            self.compositor.invalidate();
-                            self.needs_redraw = true;
-                        }
-                    }
-                }
-                k if k == config::SCROLL_TO_TOP => {
-                    if let Some(pane) = self.panes.focused() {
-                        if let Some(buffer) = self.buffers.get(&pane.id) {
-                            self.scroll_offset = buffer.scrollback_len();
-                            self.compositor.invalidate();
-                            self.needs_redraw = true;
-                        }
-                    }
-                }
-                k if k == config::SCROLL_TO_BOTTOM => {
-                    self.scroll_offset = 0;
-                    self.compositor.invalidate();
-                    self.needs_redraw = true;
-                }
-                _ => {}
             }
+
+            // Handle yank (needs to be done after match to avoid borrow issues)
+            if yank_selection {
+                if let Some(text) = self.extract_copy_mode_selection() {
+                    self.copy_to_clipboard(&text)?;
+                }
+                exit_copy_mode = true;
+            }
+
+            if exit_copy_mode {
+                self.copy_mode = None;
+            }
+
+            self.compositor.invalidate();
+            self.needs_redraw = true;
             return Ok(());
         }
 
@@ -657,32 +712,39 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp => {
-                // Scroll focused pane up (into history)
-                if !self.scroll_mode {
-                    self.scroll_mode = true;
-                    self.scroll_offset = 0;
-                }
+                // Scroll focused pane up (into history) - enters copy mode if not already
                 if let Some(pane) = self.panes.focused() {
                     if let Some(buffer) = self.buffers.get(&pane.id) {
-                        let max_offset = buffer.scrollback_len();
-                        if self.scroll_offset < max_offset {
-                            self.scroll_offset += 3;
-                            self.scroll_offset = self.scroll_offset.min(max_offset);
-                            self.compositor.invalidate();
-                            self.needs_redraw = true;
+                        if self.copy_mode.is_none() {
+                            self.copy_mode = Some(CopyModeState::new(
+                                buffer.width(),
+                                buffer.height(),
+                                buffer.scrollback_len(),
+                            ));
+                        }
+                        if let Some(ref mut copy_state) = self.copy_mode {
+                            let max_offset = copy_state.scrollback_len;
+                            if copy_state.scroll_offset < max_offset {
+                                copy_state.scroll_offset += 3;
+                                copy_state.scroll_offset = copy_state.scroll_offset.min(max_offset);
+                                self.compositor.invalidate();
+                                self.needs_redraw = true;
+                            }
                         }
                     }
                 }
             }
             MouseEventKind::ScrollDown => {
                 // Scroll focused pane down (towards live)
-                if self.scroll_mode && self.scroll_offset > 0 {
-                    self.scroll_offset = self.scroll_offset.saturating_sub(3);
-                    if self.scroll_offset == 0 {
-                        self.scroll_mode = false;
+                if let Some(ref mut copy_state) = self.copy_mode {
+                    if copy_state.scroll_offset > 0 {
+                        copy_state.scroll_offset = copy_state.scroll_offset.saturating_sub(3);
+                        if copy_state.scroll_offset == 0 {
+                            self.copy_mode = None;
+                        }
+                        self.compositor.invalidate();
+                        self.needs_redraw = true;
                     }
-                    self.compositor.invalidate();
-                    self.needs_redraw = true;
                 }
             }
             _ => {}
@@ -795,6 +857,57 @@ impl App {
         Ok(())
     }
 
+    /// Get line content from buffer at given buffer Y coordinate (negative = scrollback)
+    fn get_line_content(&self, buffer: &ScreenBuffer, buffer_y: i32) -> Vec<char> {
+        let mut line = Vec::new();
+        for x in 0..buffer.width() {
+            let cell = buffer.get_at_scroll_offset(x, buffer_y);
+            line.push(cell.ch);
+        }
+        line
+    }
+
+    /// Extract selected text from copy mode selection
+    fn extract_copy_mode_selection(&self) -> Option<String> {
+        let copy_state = self.copy_mode.as_ref()?;
+        let (start, end) = copy_state.get_selection_bounds()
+            .map(|(sx, sy, ex, ey)| (
+                copy_mode::BufferPos::new(sx, sy),
+                copy_mode::BufferPos::new(ex, ey),
+            ))?;
+
+        let pane = self.panes.focused()?;
+        let buffer = self.buffers.get(&pane.id)?;
+
+        let mut result = String::new();
+        for y in start.y..=end.y {
+            let line_start = if y == start.y { start.x } else { 0 };
+            let line_end = if y == end.y { end.x } else { buffer.width().saturating_sub(1) };
+
+            for x in line_start..=line_end {
+                let cell = buffer.get_at_scroll_offset(x, y);
+                result.push(cell.ch);
+            }
+            // Trim trailing spaces from each line
+            if y < end.y {
+                while result.ends_with(' ') {
+                    result.pop();
+                }
+                result.push('\n');
+            }
+        }
+        // Trim trailing spaces from last line
+        while result.ends_with(' ') {
+            result.pop();
+        }
+
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
     /// Render the screen
     fn render(&mut self) -> Result<()> {
         if !self.needs_redraw {
@@ -827,12 +940,33 @@ impl App {
                         pane.rect.width,
                         pane.rect.height.saturating_sub(1),
                     );
-                    // Only apply scroll offset to focused pane in scroll mode
-                    let offset = if self.scroll_mode && is_focused { self.scroll_offset } else { 0 };
-                    // Get selection bounds for this pane
-                    let selection = self.mouse_selection.as_ref()
-                        .filter(|s| s.pane_id == pane.id)
-                        .map(|s| (s.buf_start_x, s.buf_start_y, s.buf_end_x, s.buf_end_y));
+                    // Only apply scroll offset to focused pane in copy mode
+                    let offset = if is_focused {
+                        self.copy_mode.as_ref().map(|c| c.scroll_offset).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    // Get selection bounds for this pane (mouse selection or copy mode selection)
+                    let selection = if is_focused {
+                        if let Some(ref copy_state) = self.copy_mode {
+                            copy_state.get_selection_bounds().map(|(sx, sy, ex, ey)| {
+                                // Convert buffer Y to screen Y for rendering
+                                // sy/ey are buffer coords (negative = scrollback)
+                                // Need to convert to screen coords relative to visible area
+                                let screen_sy = (sy + copy_state.scroll_offset as i32) as u16;
+                                let screen_ey = (ey + copy_state.scroll_offset as i32) as u16;
+                                (sx, screen_sy, ex, screen_ey)
+                            })
+                        } else {
+                            self.mouse_selection.as_ref()
+                                .filter(|s| s.pane_id == pane.id)
+                                .map(|s| (s.buf_start_x, s.buf_start_y, s.buf_end_x, s.buf_end_y))
+                        }
+                    } else {
+                        self.mouse_selection.as_ref()
+                            .filter(|s| s.pane_id == pane.id)
+                            .map(|s| (s.buf_start_x, s.buf_start_y, s.buf_end_x, s.buf_end_y))
+                    };
                     self.compositor.render_pane(&mut stdout, buffer, content_rect, is_focused, offset, selection)?;
                     // Draw window header with number and title
                     self.draw_window_header(&mut stdout, pane.rect, win_num + 1, buffer.title(), is_focused)?;
@@ -862,22 +996,27 @@ impl App {
         self.render_status_bar(&mut stdout)?;
 
         // Position cursor in focused pane (if visible and has size)
-        // Don't show cursor in scroll mode since we're viewing history
-        if !self.scroll_mode {
-            if let Some(pane) = self.panes.focused() {
-                if visible_ids.contains(&pane.id) && pane.rect.width > 0 && pane.rect.height > 0 {
-                    if let Some(buffer) = self.buffers.get(&pane.id) {
-                        let (cx, cy) = buffer.cursor();
-                        // Clamp cursor to content area bounds
-                        let content_height = pane.rect.height.saturating_sub(1);
-                        let clamped_cx = cx.min(pane.rect.width.saturating_sub(1));
-                        let clamped_cy = cy.min(content_height.saturating_sub(1));
+        if let Some(pane) = self.panes.focused() {
+            if visible_ids.contains(&pane.id) && pane.rect.width > 0 && pane.rect.height > 0 {
+                if let Some(ref copy_state) = self.copy_mode {
+                    // In copy mode: show copy mode cursor
+                    if let Some((cx, cy)) = copy_state.cursor_screen_pos() {
                         // +1 to account for header row
-                        queue!(stdout, MoveTo(pane.rect.x + clamped_cx, pane.rect.y + 1 + clamped_cy))?;
-                        // Only show cursor if the application wants it visible
-                        if buffer.cursor_visible() {
-                            queue!(stdout, Show)?;
-                        }
+                        queue!(stdout, MoveTo(pane.rect.x + cx, pane.rect.y + 1 + cy))?;
+                        queue!(stdout, Show)?;
+                    }
+                } else if let Some(buffer) = self.buffers.get(&pane.id) {
+                    // Normal mode: show buffer cursor
+                    let (cx, cy) = buffer.cursor();
+                    // Clamp cursor to content area bounds
+                    let content_height = pane.rect.height.saturating_sub(1);
+                    let clamped_cx = cx.min(pane.rect.width.saturating_sub(1));
+                    let clamped_cy = cy.min(content_height.saturating_sub(1));
+                    // +1 to account for header row
+                    queue!(stdout, MoveTo(pane.rect.x + clamped_cx, pane.rect.y + 1 + clamped_cy))?;
+                    // Only show cursor if the application wants it visible
+                    if buffer.cursor_visible() {
+                        queue!(stdout, Show)?;
                     }
                 }
             }
@@ -944,17 +1083,15 @@ impl App {
             write!(stdout, " [Z]")?;
         }
 
-        // Show scroll mode indicator
-        if self.scroll_mode {
+        // Show copy mode indicator
+        if let Some(ref copy_state) = self.copy_mode {
             queue!(stdout, SetForegroundColor(Color::Yellow), SetAttribute(Attribute::Bold))?;
-            if let Some(pane) = self.panes.focused() {
-                if let Some(buffer) = self.buffers.get(&pane.id) {
-                    let total = buffer.scrollback_len();
-                    write!(stdout, " [SCROLL {}/{}]", self.scroll_offset, total)?;
-                }
-            } else {
-                write!(stdout, " [SCROLL]")?;
-            }
+            let mode_str = match copy_state.visual_mode {
+                copy_mode::VisualMode::None => "COPY",
+                copy_mode::VisualMode::Char => "VISUAL",
+                copy_mode::VisualMode::Line => "V-LINE",
+            };
+            write!(stdout, " [{}  {}/{}]", mode_str, copy_state.scroll_offset, copy_state.scrollback_len)?;
         }
 
         queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;

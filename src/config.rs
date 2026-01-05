@@ -49,20 +49,18 @@ pub const KEY_TOGGLE_TAG: KeyCode = KeyCode::Char('T');
 
 // Modes
 pub const KEY_TOGGLE_BROADCAST: KeyCode = KeyCode::Char('a');
-pub const KEY_ENTER_SCROLL: KeyCode = KeyCode::Char('[');
+pub const KEY_ENTER_COPY: KeyCode = KeyCode::Char('[');
 pub const KEY_ZOOM: KeyCode = KeyCode::Char('z');
 
 // ============================================================================
-// SCROLL MODE KEYBINDINGS
+// COPY MODE KEYBINDINGS
 // ============================================================================
+// Copy mode uses vim-style navigation. These keys exit copy mode:
 
-pub const SCROLL_EXIT_1: KeyCode = KeyCode::Char('q');
-pub const SCROLL_EXIT_2: KeyCode = KeyCode::Esc;
-pub const SCROLL_UP_LINE_1: KeyCode = KeyCode::Char('k');
-pub const SCROLL_UP_LINE_2: KeyCode = KeyCode::Up;
-pub const SCROLL_DOWN_LINE_1: KeyCode = KeyCode::Char('j');
-pub const SCROLL_DOWN_LINE_2: KeyCode = KeyCode::Down;
-pub const SCROLL_UP_PAGE: KeyCode = KeyCode::PageUp;
-pub const SCROLL_DOWN_PAGE: KeyCode = KeyCode::PageDown;
-pub const SCROLL_TO_TOP: KeyCode = KeyCode::Char('g');
-pub const SCROLL_TO_BOTTOM: KeyCode = KeyCode::Char('G');
+pub const COPY_EXIT_1: KeyCode = KeyCode::Char('q');
+pub const COPY_EXIT_2: KeyCode = KeyCode::Esc;
+
+// All other copy mode keys are standard vim motions (not configurable):
+// Movement: h, j, k, l, 0, $, ^, g, G, H, M, L, PgUp, PgDown
+// Visual: v (char), V (line)
+// Yank: y (copies selection and exits)

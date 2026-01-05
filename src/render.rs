@@ -1110,6 +1110,29 @@ impl ScreenBuffer {
         self.scrollback.len()
     }
 
+    /// Get a cell at a buffer Y coordinate where negative values mean scrollback
+    /// y >= 0: current screen (0 = top visible line)
+    /// y < 0: scrollback (-1 = most recent scrollback line, -scrollback_len = oldest)
+    pub fn get_at_scroll_offset(&self, x: u16, y: i32) -> Cell {
+        let x = x as usize;
+        if y >= 0 {
+            // Current screen
+            let y = y as usize;
+            if y < self.height as usize && x < self.width as usize {
+                return self.get(x as u16, y as u16);
+            }
+        } else {
+            // Scrollback: y = -1 is most recent, y = -scrollback_len is oldest
+            let scrollback_idx = (self.scrollback.len() as i32 + y) as usize;
+            if let Some(line) = self.scrollback.get(scrollback_idx) {
+                if x < line.len() {
+                    return line[x];
+                }
+            }
+        }
+        Cell::default()
+    }
+
     /// Get a cell with scroll offset (for viewing scrollback)
     /// scroll_offset is how many lines back from current view (0 = live view)
     pub fn get_scrolled(&self, x: u16, y: u16, scroll_offset: usize) -> Cell {
