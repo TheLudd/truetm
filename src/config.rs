@@ -53,7 +53,7 @@ pub const KEY_TOGGLE_TAG: KeyCode = KeyCode::Char('T');
 
 // Modes
 pub const KEY_TOGGLE_BROADCAST: KeyCode = KeyCode::Char('a');
-pub const KEY_ENTER_COPY: KeyCode = KeyCode::Char('[');
+pub const KEY_ENTER_COPY: KeyCode = KeyCode::Char('s');
 pub const KEY_ZOOM: KeyCode = KeyCode::Char('z');
 
 // ============================================================================
