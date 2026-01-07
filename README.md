@@ -55,11 +55,13 @@ All keybindings use `Ctrl+B` as the prefix key.
 | -------------- | -------------------------------------------- |
 | `Ctrl+B c`     | Create new window                            |
 | `Ctrl+B x`     | Close focused window                         |
-| `Ctrl+B j`     | Focus next window                            |
-| `Ctrl+B k`     | Focus previous window                        |
+| `Ctrl+B h`     | Focus window to the left                     |
+| `Ctrl+B j`     | Focus window below                           |
+| `Ctrl+B k`     | Focus window above                           |
+| `Ctrl+B l`     | Focus window to the right                    |
 | `Ctrl+B Enter` | Swap focused window with master              |
-| `Ctrl+B h`     | Decrease master width                        |
-| `Ctrl+B l`     | Increase master width                        |
+| `Ctrl+B H`     | Decrease master width                        |
+| `Ctrl+B L`     | Increase master width                        |
 | `Ctrl+B z`     | Toggle zoom (fullscreen focused window)      |
 | `Ctrl+B 1-9`   | Focus window by number                       |
 | `Ctrl+B a`     | Toggle broadcast mode (input to all windows) |

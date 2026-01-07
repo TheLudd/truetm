@@ -280,46 +280,60 @@ impl PaneManager {
         self.panes.iter().any(|p| p.tags.contains(tag))
     }
 
-    /// Focus next pane within a view
-    pub fn focus_next_in_view(&mut self, view: TagSet) {
-        let visible: Vec<usize> = self.panes
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.tags.intersects(view))
-            .map(|(i, _)| i)
-            .collect();
+    /// Focus pane in direction (left/right/up/down) within a view
+    pub fn focus_direction(&mut self, view: TagSet, dx: i32, dy: i32) {
+        let focused_idx = match self.focus {
+            Some(f) => f,
+            None => return,
+        };
 
-        if visible.is_empty() {
-            return;
+        let focused_rect = match self.panes.get(focused_idx) {
+            Some(p) if p.tags.intersects(view) => p.rect,
+            _ => return,
+        };
+
+        // Calculate center of focused pane
+        let focused_cx = focused_rect.x as i32 + focused_rect.width as i32 / 2;
+        let focused_cy = focused_rect.y as i32 + focused_rect.height as i32 / 2;
+
+        let mut best_idx: Option<usize> = None;
+        let mut best_dist = i32::MAX;
+
+        for (i, pane) in self.panes.iter().enumerate() {
+            if i == focused_idx || !pane.tags.intersects(view) {
+                continue;
+            }
+            if pane.rect.width == 0 || pane.rect.height == 0 {
+                continue; // Skip hidden panes
+            }
+
+            let cx = pane.rect.x as i32 + pane.rect.width as i32 / 2;
+            let cy = pane.rect.y as i32 + pane.rect.height as i32 / 2;
+
+            // Check if pane is in the requested direction
+            let in_direction = match (dx, dy) {
+                (-1, 0) => cx < focused_cx, // left
+                (1, 0) => cx > focused_cx,  // right
+                (0, -1) => cy < focused_cy, // up
+                (0, 1) => cy > focused_cy,  // down
+                _ => false,
+            };
+
+            if !in_direction {
+                continue;
+            }
+
+            // Calculate distance (Manhattan for simplicity)
+            let dist = (cx - focused_cx).abs() + (cy - focused_cy).abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best_idx = Some(i);
+            }
         }
 
-        let current_pos = self.focus.and_then(|f| visible.iter().position(|&i| i == f));
-        let next_pos = match current_pos {
-            Some(pos) => (pos + 1) % visible.len(),
-            None => 0,
-        };
-        self.focus = Some(visible[next_pos]);
-    }
-
-    /// Focus previous pane within a view
-    pub fn focus_prev_in_view(&mut self, view: TagSet) {
-        let visible: Vec<usize> = self.panes
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.tags.intersects(view))
-            .map(|(i, _)| i)
-            .collect();
-
-        if visible.is_empty() {
-            return;
+        if let Some(idx) = best_idx {
+            self.focus = Some(idx);
         }
-
-        let current_pos = self.focus.and_then(|f| visible.iter().position(|&i| i == f));
-        let next_pos = match current_pos {
-            Some(pos) => if pos == 0 { visible.len() - 1 } else { pos - 1 },
-            None => 0,
-        };
-        self.focus = Some(visible[next_pos]);
     }
 
     /// Ensure focus is on a pane visible in the view

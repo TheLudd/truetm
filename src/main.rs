@@ -448,12 +448,20 @@ impl App {
                         self.running = false;
                     }
                 }
-                k if k == config::KEY_FOCUS_NEXT => {
-                    self.panes.focus_next_in_view(self.current_view);
+                k if k == config::KEY_FOCUS_LEFT => {
+                    self.panes.focus_direction(self.current_view, -1, 0);
                     self.needs_redraw = true;
                 }
-                k if k == config::KEY_FOCUS_PREV => {
-                    self.panes.focus_prev_in_view(self.current_view);
+                k if k == config::KEY_FOCUS_DOWN => {
+                    self.panes.focus_direction(self.current_view, 0, 1);
+                    self.needs_redraw = true;
+                }
+                k if k == config::KEY_FOCUS_UP => {
+                    self.panes.focus_direction(self.current_view, 0, -1);
+                    self.needs_redraw = true;
+                }
+                k if k == config::KEY_FOCUS_RIGHT => {
+                    self.panes.focus_direction(self.current_view, 1, 0);
                     self.needs_redraw = true;
                 }
                 k if k == config::KEY_MASTER_SHRINK => {

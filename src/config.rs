@@ -34,13 +34,17 @@ pub const PREFIX_MODIFIERS: KeyModifiers = KeyModifiers::CONTROL;
 pub const KEY_QUIT: KeyCode = KeyCode::Char('q');
 pub const KEY_NEW_WINDOW: KeyCode = KeyCode::Char('c');
 pub const KEY_CLOSE_WINDOW: KeyCode = KeyCode::Char('x');
-pub const KEY_FOCUS_NEXT: KeyCode = KeyCode::Char('j');
-pub const KEY_FOCUS_PREV: KeyCode = KeyCode::Char('k');
 pub const KEY_SWAP_MASTER: KeyCode = KeyCode::Enter;
 
-// Layout
-pub const KEY_MASTER_SHRINK: KeyCode = KeyCode::Char('h');
-pub const KEY_MASTER_GROW: KeyCode = KeyCode::Char('l');
+// Directional window focus (vim-style)
+pub const KEY_FOCUS_LEFT: KeyCode = KeyCode::Char('h');
+pub const KEY_FOCUS_DOWN: KeyCode = KeyCode::Char('j');
+pub const KEY_FOCUS_UP: KeyCode = KeyCode::Char('k');
+pub const KEY_FOCUS_RIGHT: KeyCode = KeyCode::Char('l');
+
+// Layout (Shift+h/l)
+pub const KEY_MASTER_SHRINK: KeyCode = KeyCode::Char('H');
+pub const KEY_MASTER_GROW: KeyCode = KeyCode::Char('L');
 
 // Tags
 pub const KEY_VIEW_TAG: KeyCode = KeyCode::Char('v');
