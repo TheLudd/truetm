@@ -45,7 +45,11 @@ sudo cp target/release/truetm /usr/local/bin/
 truetm
 ```
 
-## Keybindings
+## Configuration
+
+truetm follows the dwm philosophy: configuration is done at compile time by editing `src/config.rs`. This file contains all keybindings and settings in a readable format. After making changes, recompile with `cargo build --release`.
+
+## Default Keybindings
 
 All keybindings use `Ctrl+B` as the prefix key.
 
@@ -149,10 +153,6 @@ Scrollback stores up to 10,000 lines of history per window.
 | Click and drag | Select text within a pane                   |
 | Scroll wheel   | Scroll through scrollback (enters copy mode)|
 
-## Configuration
-
-truetm follows the dwm philosophy: configuration is done at compile time by editing `src/config.rs`. This file contains all keybindings and settings in a readable format.
-
 ## Author
 
 Fully vibe coded with [Claude Code](https://claude.com/claude-code) and Opus 4.5.
@@ -160,4 +160,3 @@ Fully vibe coded with [Claude Code](https://claude.com/claude-code) and Opus 4.5
 ## License
 
 [Unlicense](UNLICENSE) - Public domain. Do whatever you want.
-

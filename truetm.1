@@ -8,7 +8,10 @@ truetm \- truecolor terminal multiplexer
 is a terminal multiplexer with truecolor support. It uses a
 dwm-style tagging system where windows can have multiple tags and views can
 display windows with any of the selected tags.
-.SH KEYBINDINGS
+.SH CONFIGURATION
+truetm follows the dwm philosophy of compile-time configuration. Edit
+src/config.rs and recompile to customize keybindings and settings.
+.SH DEFAULT KEYBINDINGS
 All keybindings use
 .B Ctrl+B
 as the prefix key.
@@ -174,9 +177,6 @@ same commands across multiple terminals.
 .SH SCROLLBACK
 Each window stores up to 10,000 lines of scrollback history, accessible via
 copy mode or mouse scroll.
-.SH CONFIGURATION
-truetm follows the dwm philosophy of compile-time configuration. Edit
-src/config.rs and recompile to customize keybindings and settings.
 .SH SEE ALSO
 .BR dvtm (1),
 .BR tmux (1),
