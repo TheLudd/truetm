@@ -659,9 +659,18 @@ impl App {
                 let count = copy_state.get_count();
 
                 match key.code {
-                    // Exit: q or Esc
-                    k if k == config::COPY_EXIT_1 || k == config::COPY_EXIT_2 => {
+                    // Exit: q always exits, Esc exits visual first then copy mode
+                    k if k == config::COPY_EXIT_1 => {
                         exit_copy_mode = true;
+                    }
+                    k if k == config::COPY_EXIT_2 => {
+                        // Escape: if in visual mode, exit visual but stay in copy mode
+                        if copy_state.visual_mode != copy_mode::VisualMode::None {
+                            copy_state.visual_mode = copy_mode::VisualMode::None;
+                            copy_state.selection = None;
+                        } else {
+                            exit_copy_mode = true;
+                        }
                     }
 
                     // Numeric prefix (1-9 start, 0 continues if count started)
