@@ -1267,7 +1267,19 @@ impl App {
                     };
                     self.compositor.render_pane(&mut stdout, buffer, content_rect, is_focused, offset, selection)?;
                     // Draw window header with number and title
-                    self.draw_window_header(&mut stdout, pane.rect, win_num + 1, buffer.title(), is_focused)?;
+                    // Show copy mode indicator in header of focused pane
+                    let mode_indicator = if is_focused {
+                        self.copy_mode.as_ref().map(|cs| {
+                            match cs.visual_mode {
+                                copy_mode::VisualMode::None => "COPY",
+                                copy_mode::VisualMode::Char => "VISUAL",
+                                copy_mode::VisualMode::Line => "V-LINE",
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                    self.draw_window_header(&mut stdout, pane.rect, win_num + 1, buffer.title(), is_focused, mode_indicator)?;
                 }
             }
         }
@@ -1381,7 +1393,7 @@ impl App {
             write!(stdout, " [Z]")?;
         }
 
-        // Show copy mode indicator
+        // Show copy mode prompts in status bar (mode indicator is in window header)
         if let Some(ref copy_state) = self.copy_mode {
             queue!(stdout, SetForegroundColor(Color::Yellow), SetAttribute(Attribute::Bold))?;
 
@@ -1397,15 +1409,9 @@ impl App {
                     copy_mode::TextObjectModifier::Around => 'a',
                 };
                 write!(stdout, " {}:", mod_char)?;
-            } else {
-                let mode_str = match copy_state.visual_mode {
-                    copy_mode::VisualMode::None => "COPY",
-                    copy_mode::VisualMode::Char => "VISUAL",
-                    copy_mode::VisualMode::Line => "V-LINE",
-                };
-                // Show count if set
-                let count_str = copy_state.count.map(|c| format!("{}", c)).unwrap_or_default();
-                write!(stdout, " [{}{}  {}/{}]", count_str, mode_str, copy_state.scroll_offset, copy_state.scrollback_len)?;
+            } else if let Some(count) = copy_state.count {
+                // Show count if being entered
+                write!(stdout, " {}", count)?;
             }
         }
 
@@ -1415,7 +1421,7 @@ impl App {
     }
 
     /// Draw window header with number, title, and line
-    fn draw_window_header(&self, stdout: &mut impl Write, rect: Rect, num: usize, title: Option<&str>, is_focused: bool) -> Result<()> {
+    fn draw_window_header(&self, stdout: &mut impl Write, rect: Rect, num: usize, title: Option<&str>, is_focused: bool, mode_indicator: Option<&str>) -> Result<()> {
         use crossterm::style::{SetForegroundColor, Color, Attribute, SetAttribute};
 
         queue!(stdout, MoveTo(rect.x, rect.y))?;
@@ -1433,13 +1439,17 @@ impl App {
         // Calculate remaining width for title and line
         let mut remaining = rect.width.saturating_sub(num_str.chars().count() as u16) as usize;
 
+        // Reserve space for mode indicator if present
+        let indicator_len = mode_indicator.map(|s| s.len() + 2).unwrap_or(0); // +2 for brackets
+        let available_for_title = remaining.saturating_sub(indicator_len);
+
         // Draw title if present
         if let Some(title) = title {
-            if remaining > 2 {
+            if available_for_title > 2 {
                 write!(stdout, " ")?;
                 remaining -= 1;
-                // Truncate title if too long (leave room for trailing line)
-                let max_title_len = remaining.saturating_sub(1);
+                // Truncate title if too long (leave room for trailing line and indicator)
+                let max_title_len = available_for_title.saturating_sub(2);
                 if title.len() <= max_title_len {
                     write!(stdout, "{}", title)?;
                     remaining -= title.len();
@@ -1452,9 +1462,16 @@ impl App {
             }
         }
 
-        // Draw line for the rest of the header
-        for _ in 0..remaining {
+        // Draw line, leaving room for indicator
+        let line_len = remaining.saturating_sub(indicator_len);
+        for _ in 0..line_len {
             write!(stdout, "─")?;
+        }
+
+        // Draw mode indicator at the end if present
+        if let Some(indicator) = mode_indicator {
+            queue!(stdout, SetForegroundColor(Color::Yellow), SetAttribute(Attribute::Bold))?;
+            write!(stdout, "[{}]", indicator)?;
         }
 
         queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
