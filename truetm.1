@@ -71,8 +71,13 @@ Toggle tag N on the focused window.
 .SS Copy Mode
 Enter copy mode with
 .B Ctrl+B s
-to navigate scrollback and copy text. Supports vim-style navigation with
-numeric counts (e.g., 5j moves 5 lines down).
+to navigate scrollback and copy text. You can also enter copy mode with an
+initial motion using
+.B Ctrl+B PgUp/PgDown
+or
+.B Ctrl+B Up/Down.
+Supports vim-style navigation with numeric counts (e.g., 5j moves 5 lines down).
+Press Esc to exit visual selection, Esc again (or q) to exit copy mode.
 .TP
 .B h/j/k/l
 Move cursor left/down/up/right.

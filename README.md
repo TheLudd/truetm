@@ -86,7 +86,12 @@ Tags work like virtual desktops but more flexible:
 
 ### Copy Mode (Vim-style Scrollback)
 
-Enter copy mode with `Ctrl+B s`. Supports numeric counts (e.g., `5j` to move 5 lines down).
+Enter copy mode with:
+- `Ctrl+B s` - enter copy mode
+- `Ctrl+B PgUp/PgDown` - enter and page up/down
+- `Ctrl+B ↑/↓` - enter and move up/down
+
+Supports numeric counts (e.g., `5j` to move 5 lines down). Press `Esc` to exit visual selection, `Esc` again (or `q`) to exit copy mode.
 
 #### Basic Movement
 
