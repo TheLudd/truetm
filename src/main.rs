@@ -515,6 +515,29 @@ impl App {
                         }
                     }
                 }
+                // Enter copy mode with initial motion
+                KeyCode::PageUp | KeyCode::PageDown | KeyCode::Up | KeyCode::Down => {
+                    if let Some(pane) = self.panes.focused() {
+                        if let Some(buffer) = self.buffers.get(&pane.id) {
+                            let mut copy_state = CopyModeState::new(
+                                buffer.width(),
+                                buffer.height(),
+                                buffer.scrollback_len(),
+                            );
+                            // Perform initial motion
+                            match key.code {
+                                KeyCode::PageUp => copy_state.page_up(),
+                                KeyCode::PageDown => copy_state.page_down(),
+                                KeyCode::Up => copy_state.move_up(),
+                                KeyCode::Down => copy_state.move_down(),
+                                _ => {}
+                            }
+                            self.copy_mode = Some(copy_state);
+                            self.compositor.invalidate();
+                            self.needs_redraw = true;
+                        }
+                    }
+                }
                 k if k == config::KEY_ZOOM => {
                     if let Some(focused) = self.panes.focused() {
                         let focused_id = focused.id;
