@@ -290,19 +290,19 @@ impl CopyModeState {
         self.move_cursor(BufferPos::new(self.cursor.x, visible_bottom));
     }
 
-    /// Page up (Ctrl+U or PgUp)
+    /// Page up (PgUp)
     pub fn page_up(&mut self) {
-        let half_page = (self.buffer_height / 2).max(1) as i32;
+        let page = self.buffer_height.max(1) as i32;
         let min_y = -(self.scrollback_len as i32);
-        let new_y = (self.cursor.y - half_page).max(min_y);
+        let new_y = (self.cursor.y - page).max(min_y);
         self.move_cursor(BufferPos::new(self.cursor.x, new_y));
     }
 
-    /// Page down (Ctrl+D or PgDown)
+    /// Page down (PgDown)
     pub fn page_down(&mut self) {
-        let half_page = (self.buffer_height / 2).max(1) as i32;
+        let page = self.buffer_height.max(1) as i32;
         let max_y = (self.buffer_height as i32) - 1;
-        let new_y = (self.cursor.y + half_page).min(max_y);
+        let new_y = (self.cursor.y + page).min(max_y);
         self.move_cursor(BufferPos::new(self.cursor.x, new_y));
     }
 
