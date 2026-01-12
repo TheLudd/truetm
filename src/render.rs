@@ -1249,7 +1249,8 @@ impl Compositor {
     }
 
     /// Render a pane's buffer to the given rect with differential updates
-    /// selection: Optional (start_x, start_y, end_x, end_y) in buffer coordinates
+    /// selection: Optional (start_x, start_y, end_x, end_y) in screen coordinates
+    /// search_matches: List of (x, screen_y, len) for each search match to highlight
     pub fn render_pane<W: Write>(
         &mut self,
         writer: &mut W,
@@ -1258,6 +1259,7 @@ impl Compositor {
         focused: bool,
         scroll_offset: usize,
         selection: Option<(u16, u16, u16, u16)>,
+        search_matches: &[(u16, u16, u16)],
     ) -> std::io::Result<()> {
         use crossterm::style::{Attribute, SetAttribute};
 
@@ -1270,10 +1272,21 @@ impl Compositor {
             }
         });
 
+        // Helper to check if a position is in a search match
+        let is_in_search_match = |x: u16, y: u16| -> bool {
+            for &(mx, my, mlen) in search_matches {
+                if y == my && x >= mx && x < mx + mlen {
+                    return true;
+                }
+            }
+            false
+        };
+
         let mut last_fg: Option<Color> = None;
         let mut last_bg: Option<Color> = None;
         let mut last_attrs = Attrs::default();
         let mut last_selected = false;
+        let mut last_search_match = false;
         let mut need_move = true;
         let mut attrs_applied = false;
 
@@ -1299,11 +1312,16 @@ impl Compositor {
                     }
                 }).unwrap_or(false);
 
+                // Check if this cell is in a search match
+                let is_match = is_in_search_match(x, y);
+
                 // Check if this cell needs updating
                 let screen_idx = (screen_y as usize) * (self.width as usize) + (screen_x as usize);
                 if screen_idx < self.last_frame.len() {
                     let last = &self.last_frame[screen_idx];
-                    if last.cell == cell && last.focused == focused && !is_selected && !last_selected {
+                    if last.cell == cell && last.focused == focused
+                        && !is_selected && !last_selected
+                        && !is_match && !last_search_match {
                         // Cell unchanged, skip it
                         need_move = true;
                         continue;
@@ -1325,8 +1343,9 @@ impl Compositor {
                 let attrs_changed = cell.attrs != last_attrs;
                 let colors_changed = cell.fg != last_fg || cell.bg != last_bg;
                 let selection_changed = is_selected != last_selected;
+                let match_changed = is_match != last_search_match;
 
-                if attrs_changed || colors_changed || selection_changed || !attrs_applied {
+                if attrs_changed || colors_changed || selection_changed || match_changed || !attrs_applied {
                     // Reset all attributes first
                     queue!(writer, SetAttribute(Attribute::Reset))?;
                     queue!(writer, ResetColor)?;
@@ -1341,7 +1360,8 @@ impl Compositor {
                     if cell.attrs.has(Attrs::ITALIC) {
                         queue!(writer, SetAttribute(Attribute::Italic))?;
                     }
-                    if cell.attrs.has(Attrs::UNDERLINE) {
+                    if cell.attrs.has(Attrs::UNDERLINE) || is_match {
+                        // Use underline for search match highlighting
                         queue!(writer, SetAttribute(Attribute::Underlined))?;
                     }
                     if cell.attrs.has(Attrs::REVERSE) || is_selected {
@@ -1352,8 +1372,10 @@ impl Compositor {
                         queue!(writer, SetAttribute(Attribute::CrossedOut))?;
                     }
 
-                    // Apply colors
-                    if let Some(fg) = cell.fg {
+                    // Apply colors - search matches use yellow foreground
+                    if is_match && !is_selected {
+                        queue!(writer, SetForegroundColor(Color::Yellow))?;
+                    } else if let Some(fg) = cell.fg {
                         queue!(writer, SetForegroundColor(fg))?;
                     }
                     if let Some(bg) = cell.bg {
@@ -1364,6 +1386,7 @@ impl Compositor {
                     last_bg = cell.bg;
                     last_attrs = cell.attrs;
                     last_selected = is_selected;
+                    last_search_match = is_match;
                     attrs_applied = true;
                 }
 

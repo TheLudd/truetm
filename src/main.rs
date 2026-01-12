@@ -1297,7 +1297,27 @@ impl App {
                             .filter(|s| s.pane_id == pane.id)
                             .map(|s| (s.buf_start_x, s.buf_start_y, s.buf_end_x, s.buf_end_y))
                     };
-                    self.compositor.render_pane(&mut stdout, buffer, content_rect, is_focused, offset, selection)?;
+                    // Get search matches for this pane (convert to screen coordinates)
+                    let search_matches: Vec<(u16, u16, u16)> = if is_focused {
+                        self.copy_mode.as_ref()
+                            .map(|cs| {
+                                cs.search_matches.iter()
+                                    .filter_map(|m| {
+                                        // Convert buffer Y to screen Y
+                                        let screen_y = (m.y + cs.scroll_offset as i32) as i16;
+                                        if screen_y >= 0 && screen_y < buffer.height() as i16 {
+                                            Some((m.x, screen_y as u16, m.len))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    self.compositor.render_pane(&mut stdout, buffer, content_rect, is_focused, offset, selection, &search_matches)?;
                     // Draw window header with number and title
                     // Show copy mode indicator in header of focused pane
                     let mode_indicator = if is_focused {

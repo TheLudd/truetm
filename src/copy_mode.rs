@@ -102,6 +102,14 @@ impl Selection {
     }
 }
 
+/// A search match position: (x, y, length)
+#[derive(Debug, Clone, Copy)]
+pub struct SearchMatch {
+    pub x: u16,
+    pub y: i32,
+    pub len: u16,
+}
+
 /// Copy mode state
 pub struct CopyModeState {
     pub cursor: BufferPos,
@@ -119,6 +127,8 @@ pub struct CopyModeState {
     pub last_find: Option<FindChar>,
     pub pending_find: Option<(bool, bool)>, // (forward, inclusive) - waiting for char
     pub pending_text_object: Option<TextObjectModifier>, // i or a, waiting for object type
+    // All search matches for highlighting
+    pub search_matches: Vec<SearchMatch>,
 }
 
 impl CopyModeState {
@@ -139,6 +149,7 @@ impl CopyModeState {
             last_find: None,
             pending_find: None,
             pending_text_object: None,
+            search_matches: Vec::new(),
         }
     }
 
@@ -497,7 +508,41 @@ impl CopyModeState {
         self.last_search = Some((pattern.clone(), forward));
         self.search_mode = SearchMode::None;
 
+        // Find all matches for highlighting
+        self.find_all_matches(&pattern, &get_line);
+
         self.search_next_impl(&pattern, forward, get_line)
+    }
+
+    /// Find all matches in the buffer for highlighting
+    fn find_all_matches<F>(&mut self, pattern: &str, get_line: &F)
+    where
+        F: Fn(i32) -> Vec<char>,
+    {
+        self.search_matches.clear();
+
+        let re = match Regex::new(pattern) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        let min_y = -(self.scrollback_len as i32);
+        let max_y = (self.buffer_height as i32) - 1;
+
+        for y in min_y..=max_y {
+            let chars: Vec<char> = get_line(y);
+            let line: String = chars.iter().collect();
+            for m in re.find_iter(&line) {
+                // Convert byte offset to character offset
+                let char_start = line[..m.start()].chars().count();
+                let char_len = line[m.start()..m.end()].chars().count();
+                self.search_matches.push(SearchMatch {
+                    x: char_start as u16,
+                    y,
+                    len: char_len as u16,
+                });
+            }
+        }
     }
 
     /// Search for next occurrence (n)
@@ -540,20 +585,31 @@ impl CopyModeState {
         let start_x = self.cursor.x as usize;
         let start_y = self.cursor.y;
 
+        // Helper to convert byte offset to character offset
+        let byte_to_char = |line: &str, byte_pos: usize| -> usize {
+            line[..byte_pos].chars().count()
+        };
+
         if forward {
             // Forward search: current line (after cursor), then subsequent lines
-            let line: String = get_line(start_y).into_iter().collect();
-            if let Some(m) = re.find(&line[start_x.saturating_add(1).min(line.len())..]) {
-                let new_x = start_x + 1 + m.start();
-                self.move_cursor(BufferPos::new(new_x as u16, start_y));
-                return true;
+            let chars: Vec<char> = get_line(start_y);
+            let line: String = chars.iter().collect();
+            // Convert character position to byte position for slicing
+            let byte_start: usize = chars.iter().take(start_x.saturating_add(1)).map(|c| c.len_utf8()).sum();
+            if byte_start < line.len() {
+                if let Some(m) = re.find(&line[byte_start..]) {
+                    let new_x = start_x + 1 + byte_to_char(&line[byte_start..], m.start());
+                    self.move_cursor(BufferPos::new(new_x as u16, start_y));
+                    return true;
+                }
             }
 
             // Search subsequent lines
             for y in (start_y + 1)..=max_y {
                 let line: String = get_line(y).into_iter().collect();
                 if let Some(m) = re.find(&line) {
-                    self.move_cursor(BufferPos::new(m.start() as u16, y));
+                    let char_pos = byte_to_char(&line, m.start());
+                    self.move_cursor(BufferPos::new(char_pos as u16, y));
                     return true;
                 }
             }
@@ -562,16 +618,21 @@ impl CopyModeState {
             for y in min_y..start_y {
                 let line: String = get_line(y).into_iter().collect();
                 if let Some(m) = re.find(&line) {
-                    self.move_cursor(BufferPos::new(m.start() as u16, y));
+                    let char_pos = byte_to_char(&line, m.start());
+                    self.move_cursor(BufferPos::new(char_pos as u16, y));
                     return true;
                 }
             }
         } else {
             // Backward search: current line (before cursor), then previous lines
-            let line: String = get_line(start_y).into_iter().collect();
-            let before = &line[..start_x];
+            let chars: Vec<char> = get_line(start_y);
+            let line: String = chars.iter().collect();
+            // Convert character position to byte position for slicing
+            let byte_start: usize = chars.iter().take(start_x).map(|c| c.len_utf8()).sum();
+            let before = &line[..byte_start];
             if let Some(m) = re.find_iter(before).last() {
-                self.move_cursor(BufferPos::new(m.start() as u16, start_y));
+                let char_pos = byte_to_char(&line, m.start());
+                self.move_cursor(BufferPos::new(char_pos as u16, start_y));
                 return true;
             }
 
@@ -579,7 +640,8 @@ impl CopyModeState {
             for y in (min_y..start_y).rev() {
                 let line: String = get_line(y).into_iter().collect();
                 if let Some(m) = re.find_iter(&line).last() {
-                    self.move_cursor(BufferPos::new(m.start() as u16, y));
+                    let char_pos = byte_to_char(&line, m.start());
+                    self.move_cursor(BufferPos::new(char_pos as u16, y));
                     return true;
                 }
             }
@@ -588,7 +650,8 @@ impl CopyModeState {
             for y in ((start_y + 1)..=max_y).rev() {
                 let line: String = get_line(y).into_iter().collect();
                 if let Some(m) = re.find_iter(&line).last() {
-                    self.move_cursor(BufferPos::new(m.start() as u16, y));
+                    let char_pos = byte_to_char(&line, m.start());
+                    self.move_cursor(BufferPos::new(char_pos as u16, y));
                     return true;
                 }
             }
