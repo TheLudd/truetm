@@ -350,26 +350,33 @@ impl ScreenBuffer {
     }
 
     fn process_dcs(&mut self, byte: u8) {
-        // DCS sequences end with ST (ESC \) or BEL
-        if byte == 0x07 {
-            // BEL terminates
+        // DCS sequences end with ST (ESC \), BEL, or C1 ST (0x9C)
+        if byte == 0x07 || byte == 0x9c {
+            // BEL or C1 ST terminates
+            self.parse_state = ParseState::Normal;
+        } else if byte == 0x18 || byte == 0x1a {
+            // CAN and SUB abort the sequence
             self.parse_state = ParseState::Normal;
         } else if byte == 0x1b {
             // Might be start of ST (ESC \)
             self.parse_buffer.push(byte);
-        } else if !self.parse_buffer.is_empty() && *self.parse_buffer.last().unwrap() == 0x1b && byte == b'\\' {
-            // ST received, end DCS
-            self.parse_state = ParseState::Normal;
-        } else if byte == 0x9c {
-            // C1 ST
-            self.parse_state = ParseState::Normal;
+        } else if !self.parse_buffer.is_empty() && *self.parse_buffer.last().unwrap() == 0x1b {
+            if byte == b'\\' {
+                // ST received, end DCS
+                self.parse_state = ParseState::Normal;
+            } else {
+                // ESC followed by something else - abort DCS, start new escape sequence
+                self.parse_buffer.clear();
+                self.parse_state = ParseState::Escape;
+                self.process_escape(byte);
+            }
         } else {
             // Consume but don't store (we ignore DCS content)
             // Clear buffer if it wasn't an ESC
-            if !self.parse_buffer.is_empty() && *self.parse_buffer.last().unwrap() == 0x1b {
+            if !self.parse_buffer.is_empty() {
                 self.parse_buffer.clear();
             }
-            // Safety limit
+            // Safety limit on accumulated ESC bytes
             if self.parse_buffer.len() > 4096 {
                 self.parse_state = ParseState::Normal;
             }
@@ -377,6 +384,24 @@ impl ScreenBuffer {
     }
 
     fn process_csi(&mut self, byte: u8) {
+        // Handle control characters during CSI sequence
+        if byte == 0x1b {
+            // ESC aborts current sequence and starts new escape
+            self.parse_state = ParseState::Escape;
+            self.parse_buffer.clear();
+            return;
+        }
+        if byte == 0x18 || byte == 0x1a {
+            // CAN and SUB abort the sequence
+            self.parse_state = ParseState::Normal;
+            return;
+        }
+        if byte < 0x20 {
+            // Other C0 controls: execute them and continue sequence
+            self.process_normal(byte);
+            return;
+        }
+
         if byte >= 0x40 && byte <= 0x7e {
             // Final byte - execute sequence
             self.parse_buffer.push(byte);
@@ -392,18 +417,28 @@ impl ScreenBuffer {
     }
 
     fn process_osc(&mut self, byte: u8) {
-        // OSC sequences end with BEL (0x07) or ST (ESC \)
-        if byte == 0x07 {
+        // OSC sequences end with BEL (0x07), ST (ESC \), or C1 ST (0x9C)
+        if byte == 0x07 || byte == 0x9c {
             self.execute_osc();
+            self.parse_state = ParseState::Normal;
+        } else if byte == 0x18 || byte == 0x1a {
+            // CAN and SUB abort the sequence
             self.parse_state = ParseState::Normal;
         } else if byte == 0x1b {
-            // Might be ST
+            // Might be ST, or might be new escape sequence
             self.parse_buffer.push(byte);
-        } else if !self.parse_buffer.is_empty() && *self.parse_buffer.last().unwrap() == 0x1b && byte == b'\\' {
-            // Remove the ESC we added
-            self.parse_buffer.pop();
-            self.execute_osc();
-            self.parse_state = ParseState::Normal;
+        } else if !self.parse_buffer.is_empty() && *self.parse_buffer.last().unwrap() == 0x1b {
+            if byte == b'\\' {
+                // ST (ESC \) - end of OSC
+                self.parse_buffer.pop();
+                self.execute_osc();
+                self.parse_state = ParseState::Normal;
+            } else {
+                // ESC followed by something else - abort OSC, start new escape sequence
+                self.parse_buffer.pop();
+                self.parse_state = ParseState::Escape;
+                self.process_escape(byte);
+            }
         } else {
             self.parse_buffer.push(byte);
             if self.parse_buffer.len() > 256 {
