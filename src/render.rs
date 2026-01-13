@@ -88,6 +88,8 @@ pub struct ScreenBuffer {
     title: Option<String>,
     // Cursor visibility (controlled by CSI ?25h/l)
     cursor_visible: bool,
+    // Auto-wrap mode (controlled by CSI ?7h/l) - wrap at right margin
+    auto_wrap: bool,
     // Scroll region (top and bottom line, 0-indexed, inclusive)
     scroll_top: u16,
     scroll_bottom: u16,
@@ -127,6 +129,7 @@ impl ScreenBuffer {
             in_alternate_screen: false,
             title: None,
             cursor_visible: true,
+            auto_wrap: true,
             scroll_top: 0,
             scroll_bottom: height.saturating_sub(1),
             scrollback: std::collections::VecDeque::new(),
@@ -689,6 +692,10 @@ impl ScreenBuffer {
 
     fn handle_private_mode(&mut self, mode: u16, is_set: bool) {
         match mode {
+            7 => {
+                // DECAWM - Auto-wrap mode
+                self.auto_wrap = is_set;
+            }
             25 => {
                 // Cursor visibility
                 self.cursor_visible = is_set;
@@ -911,8 +918,13 @@ impl ScreenBuffer {
 
     fn put_char(&mut self, ch: char) {
         if self.cursor_x >= self.width {
-            self.cursor_x = 0;
-            self.line_feed();
+            if self.auto_wrap {
+                self.cursor_x = 0;
+                self.line_feed();
+            } else {
+                // No auto-wrap: stay at last column
+                self.cursor_x = self.width.saturating_sub(1);
+            }
         }
 
         let idx = (self.cursor_y as usize) * (self.width as usize) + (self.cursor_x as usize);
@@ -924,7 +936,9 @@ impl ScreenBuffer {
                 attrs: self.current_attrs,
             };
         }
-        self.cursor_x += 1;
+        if self.cursor_x < self.width.saturating_sub(1) || self.auto_wrap {
+            self.cursor_x += 1;
+        }
     }
 
     fn line_feed(&mut self) {
