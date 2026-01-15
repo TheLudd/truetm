@@ -31,7 +31,7 @@ pub const PREFIX_MODIFIERS: KeyModifiers = KeyModifiers::CONTROL;
 // ============================================================================
 
 // Window management
-pub const KEY_QUIT: KeyCode = KeyCode::Char('q');
+pub const KEY_QUIT: KeyCode = KeyCode::Char('Q');
 pub const KEY_NEW_WINDOW: KeyCode = KeyCode::Char('c');
 pub const KEY_CLOSE_WINDOW: KeyCode = KeyCode::Char('x');
 pub const KEY_SWAP_MASTER: KeyCode = KeyCode::Enter;
