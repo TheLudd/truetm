@@ -1478,7 +1478,11 @@ impl App {
 
         queue!(stdout, MoveTo(rect.x, rect.y))?;
 
-        if is_focused {
+        // Use yellow for entire header when in copy mode, otherwise green/grey
+        let in_copy_mode = mode_indicator.is_some();
+        if in_copy_mode {
+            queue!(stdout, SetForegroundColor(Color::Yellow), SetAttribute(Attribute::Bold))?;
+        } else if is_focused {
             queue!(stdout, SetForegroundColor(Color::Rgb { r: 120, g: 190, b: 120 }), SetAttribute(Attribute::Bold))?;
         } else {
             queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
@@ -1522,7 +1526,6 @@ impl App {
 
         // Draw mode indicator at the end if present
         if let Some(indicator) = mode_indicator {
-            queue!(stdout, SetForegroundColor(Color::Yellow), SetAttribute(Attribute::Bold))?;
             write!(stdout, "[{}]", indicator)?;
         }
 
