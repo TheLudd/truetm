@@ -62,6 +62,13 @@ struct MouseSelection {
     buf_end_y: u16,
 }
 
+/// Per-tag state (focus and broadcast mode)
+#[derive(Debug, Clone, Default)]
+struct TagState {
+    focused_pane_id: Option<PaneId>,
+    broadcast_mode: bool,
+}
+
 /// Application state
 struct App {
     panes: PaneManager,
@@ -85,6 +92,8 @@ struct App {
     tag_history: Vec<u8>,
     // Broadcast mode - send input to all visible panes
     broadcast_mode: bool,
+    // Per-tag state (focus and broadcast mode)
+    tag_states: HashMap<u8, TagState>,
     // Copy mode - vim-style scrollback navigation and selection
     copy_mode: Option<CopyModeState>,
     // Zoom mode - focused pane is fullscreen
@@ -131,6 +140,7 @@ impl App {
             tag_count: 9,
             tag_history: vec![0], // Start with tag 0 in history
             broadcast_mode: false,
+            tag_states: HashMap::new(),
             copy_mode: None,
             zoomed_pane: None,
             mouse_selection: None,
@@ -163,6 +173,39 @@ impl App {
         }
     }
 
+    /// Save current focus and broadcast state to all tags in current view
+    fn save_tag_state(&mut self) {
+        // Don't save state when viewing ALL tags
+        if self.current_view == TagSet::ALL {
+            return;
+        }
+
+        if let Some(pane) = self.panes.focused() {
+            let pane_id = pane.id;
+            for tag in 0..self.tag_count {
+                if self.current_view.contains(tag) {
+                    let state = self.tag_states.entry(tag).or_default();
+                    state.focused_pane_id = Some(pane_id);
+                    state.broadcast_mode = self.broadcast_mode;
+                }
+            }
+        }
+    }
+
+    /// Restore focus and broadcast state from a tag
+    fn restore_tag_state(&mut self, tag: u8) {
+        if let Some(state) = self.tag_states.get(&tag).cloned() {
+            self.broadcast_mode = state.broadcast_mode;
+            if let Some(pane_id) = state.focused_pane_id {
+                // Only focus if pane exists and is visible in current view
+                let visible = self.panes.visible_in_view(self.current_view);
+                if visible.contains(&pane_id) {
+                    self.panes.focus_by_id(pane_id);
+                }
+            }
+        }
+    }
+
     /// Create a new pane with current view's tags, inheriting cwd from focused pane
     fn create_pane(&mut self) -> Result<PaneId> {
         // Get cwd from focused pane, or use current directory for initial pane
@@ -188,6 +231,7 @@ impl App {
         self.buffers.insert(id, ScreenBuffer::new(rect.width, buffer_height));
 
         self.apply_layout()?;
+        self.save_tag_state();
         self.needs_redraw = true;
 
         Ok(id)
@@ -207,13 +251,24 @@ impl App {
             self.buffers.remove(&id);
 
             // If current tag is now empty, go to previous tag in history
-            if self.panes.visible_in_view(self.current_view).is_empty() {
+            let went_to_previous = if self.panes.visible_in_view(self.current_view).is_empty() {
                 self.go_to_previous_tag();
-            }
+                true
+            } else {
+                false
+            };
 
             if let Err(e) = self.apply_layout() {
                 log::error!("Failed to apply layout after closing pane: {}", e);
             }
+
+            // Restore tag state if we switched tags
+            if went_to_previous {
+                if let Some(&tag) = self.tag_history.last() {
+                    self.restore_tag_state(tag);
+                }
+            }
+
             self.needs_redraw = true;
         }
     }
@@ -337,13 +392,24 @@ impl App {
             self.panes.remove_exited();
 
             // If current tag is now empty, go to previous tag in history
-            if self.panes.visible_in_view(self.current_view).is_empty() {
+            let went_to_previous = if self.panes.visible_in_view(self.current_view).is_empty() {
                 self.go_to_previous_tag();
-            }
+                true
+            } else {
+                false
+            };
 
             if let Err(e) = self.apply_layout() {
                 log::error!("Failed to apply layout after removing exited panes: {}", e);
             }
+
+            // Restore tag state if we switched tags
+            if went_to_previous {
+                if let Some(&tag) = self.tag_history.last() {
+                    self.restore_tag_state(tag);
+                }
+            }
+
             self.needs_redraw = true;
         }
 
@@ -378,6 +444,8 @@ impl App {
                                     self.create_pane()?;
                                 }
                                 self.apply_layout()?;
+                                // Restore saved focus and broadcast state for this tag
+                                self.restore_tag_state(tag);
                                 self.needs_redraw = true;
                             } else if num == 0 {
                                 // View all tags (doesn't affect history)
@@ -428,6 +496,7 @@ impl App {
                         let idx = (num - 1) as usize;
                         if idx < visible.len() {
                             self.panes.focus_by_id(visible[idx]);
+                            self.save_tag_state();
                             self.needs_redraw = true;
                         }
                         return Ok(());
@@ -450,18 +519,22 @@ impl App {
                 }
                 k if k == config::KEY_FOCUS_LEFT => {
                     self.panes.focus_direction(self.current_view, -1, 0);
+                    self.save_tag_state();
                     self.needs_redraw = true;
                 }
                 k if k == config::KEY_FOCUS_DOWN => {
                     self.panes.focus_direction(self.current_view, 0, 1);
+                    self.save_tag_state();
                     self.needs_redraw = true;
                 }
                 k if k == config::KEY_FOCUS_UP => {
                     self.panes.focus_direction(self.current_view, 0, -1);
+                    self.save_tag_state();
                     self.needs_redraw = true;
                 }
                 k if k == config::KEY_FOCUS_RIGHT => {
                     self.panes.focus_direction(self.current_view, 1, 0);
+                    self.save_tag_state();
                     self.needs_redraw = true;
                 }
                 k if k == config::KEY_MASTER_SHRINK => {
@@ -486,6 +559,7 @@ impl App {
                 k if k == config::KEY_SWAP_MASTER => {
                     self.panes.swap_with_master(self.current_view);
                     self.apply_layout()?;
+                    self.save_tag_state();
                     self.needs_redraw = true;
                 }
                 k if k == config::KEY_VIEW_TAG => {
@@ -499,6 +573,7 @@ impl App {
                 }
                 k if k == config::KEY_TOGGLE_BROADCAST => {
                     self.broadcast_mode = !self.broadcast_mode;
+                    self.save_tag_state();
                     self.needs_redraw = true;
                 }
                 k if k == config::KEY_ENTER_COPY => {
@@ -1006,6 +1081,7 @@ impl App {
                     });
                     // Focus the clicked pane
                     self.panes.focus_by_id(pane_id);
+                    self.save_tag_state();
                     self.needs_redraw = true;
                 }
             }
