@@ -38,6 +38,8 @@ fn main() -> Result<()> {
     let _ = execute!(io::stdout(), DisableMouseCapture);
     let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     let _ = terminal::disable_raw_mode();
+    // Reset cursor style to terminal default in case a pane left it as a bar/underline.
+    let _ = write!(io::stdout(), "\x1b[0 q");
     let _ = execute!(io::stdout(), ResetColor, Show, LeaveAlternateScreen);
 
     result
@@ -1452,6 +1454,9 @@ impl App {
                     let clamped_cy = cy.min(content_height.saturating_sub(1));
                     // +1 to account for header row
                     queue!(stdout, MoveTo(pane.rect.x + clamped_cx, pane.rect.y + 1 + clamped_cy))?;
+                    // Forward the focused pane's DECSCUSR cursor style to the host terminal
+                    // so e.g. vim's bar cursor in insert mode shows through.
+                    write!(stdout, "\x1b[{} q", buffer.cursor_style())?;
                     // Only show cursor if the application wants it visible
                     if buffer.cursor_visible() {
                         queue!(stdout, Show)?;

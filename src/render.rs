@@ -88,6 +88,8 @@ pub struct ScreenBuffer {
     title: Option<String>,
     // Cursor visibility (controlled by CSI ?25h/l)
     cursor_visible: bool,
+    // Cursor style (DECSCUSR: CSI Ps SP q). 0 = terminal default.
+    cursor_style: u8,
     // Scroll region (top and bottom line, 0-indexed, inclusive)
     scroll_top: u16,
     scroll_bottom: u16,
@@ -127,6 +129,7 @@ impl ScreenBuffer {
             in_alternate_screen: false,
             title: None,
             cursor_visible: true,
+            cursor_style: 0,
             scroll_top: 0,
             scroll_bottom: height.saturating_sub(1),
             scrollback: std::collections::VecDeque::new(),
@@ -472,6 +475,18 @@ impl ScreenBuffer {
                 let n = params.first().copied().unwrap_or(1).max(1);
                 self.cursor_x = self.cursor_x.saturating_sub(n);
             }
+            b'E' => {
+                // CNL - Cursor Next Line (down N, column 0)
+                let n = params.first().copied().unwrap_or(1).max(1);
+                self.cursor_y = (self.cursor_y + n).min(self.height.saturating_sub(1));
+                self.cursor_x = 0;
+            }
+            b'F' => {
+                // CPL - Cursor Previous Line (up N, column 0)
+                let n = params.first().copied().unwrap_or(1).max(1);
+                self.cursor_y = self.cursor_y.saturating_sub(n);
+                self.cursor_x = 0;
+            }
             b'H' | b'f' => {
                 // Cursor position
                 let row = params.first().copied().unwrap_or(1).max(1) - 1;
@@ -599,13 +614,17 @@ impl ScreenBuffer {
                 }
             }
             b'q' => {
-                // DECSCUSR - Set cursor style (ignore, we manage cursor ourselves)
-                // CSI Ps SP q - but SP is space (0x20), handled separately
+                // DECSCUSR - Set cursor style: CSI Ps SP q
+                // params_str will have a trailing space (the intermediate byte).
+                if params_str.ends_with(' ') {
+                    let digits = &params_str[..params_str.len() - 1];
+                    let style: u8 = digits.parse().unwrap_or(0);
+                    // 0..=6 are defined; clamp anything else to 0 (default).
+                    self.cursor_style = if style <= 6 { style } else { 0 };
+                }
             }
             b' ' => {
-                // Could be start of CSI Ps SP q sequence - already consumed
-                // The 'q' would be the final byte, but we got ' ' as final
-                // This means malformed sequence, ignore
+                // Intermediate byte arrived as the "final" byte — malformed, ignore.
             }
             b'S' => {
                 // SU - Scroll Up (pan down)
@@ -1103,6 +1122,11 @@ impl ScreenBuffer {
 
     pub fn cursor_visible(&self) -> bool {
         self.cursor_visible
+    }
+
+    /// DECSCUSR cursor style: 0 = terminal default, 1/2 = block, 3/4 = underline, 5/6 = bar.
+    pub fn cursor_style(&self) -> u8 {
+        self.cursor_style
     }
 
     /// Get number of lines in scrollback buffer
