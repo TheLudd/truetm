@@ -441,6 +441,33 @@ impl ScreenBuffer {
         let final_byte = *self.parse_buffer.last().unwrap();
         let params_str = String::from_utf8_lossy(&self.parse_buffer[..self.parse_buffer.len() - 1]);
 
+        // Prefixed sequences (CSI ? / > / < / = ...) form separate command
+        // namespaces: kitty keyboard protocol (CSI ?u, CSI >1u, CSI <u),
+        // XTSAVE/XTRESTORE (CSI ? Pm s/r), XTMODKEYS (CSI > Pp;Pv m), etc.
+        // They must never fall through to the unprefixed handlers below
+        // (e.g. CSI ?u would otherwise execute "restore cursor").
+        let prefix = params_str.chars().next().filter(|c| matches!(c, '?' | '>' | '<' | '='));
+        if let Some(prefix) = prefix {
+            match (prefix, final_byte) {
+                ('?', b'h') | ('?', b'l') => {
+                    let is_set = final_byte == b'h';
+                    let modes: Vec<u16> = params_str[1..]
+                        .split(';')
+                        .filter_map(|m| m.parse().ok())
+                        .collect();
+                    for mode in modes {
+                        self.handle_private_mode(mode, is_set);
+                    }
+                }
+                ('>', b'c') => {
+                    // Secondary DA - report as a VT100-class terminal
+                    self.response_queue.push(b"\x1b[>0;0;0c".to_vec());
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // For SGR (m), we need special handling of colon sub-parameters
         // For other sequences, just parse semicolon-separated values
         if final_byte == b'm' {
@@ -558,15 +585,8 @@ impl ScreenBuffer {
                 self.cursor_y = row.min(self.height.saturating_sub(1));
             }
             b'h' | b'l' => {
-                // Set/reset mode
-                let is_set = final_byte == b'h';
-                // Check for private mode (? prefix)
-                if params_str.starts_with('?') {
-                    let mode: Option<u16> = params_str[1..].parse().ok();
-                    if let Some(mode) = mode {
-                        self.handle_private_mode(mode, is_set);
-                    }
-                }
+                // ANSI SM/RM (private ? modes are handled in the prefix
+                // branch above) - not supported, ignore
             }
             b'X' => {
                 // Erase characters (replace with spaces)
@@ -1431,5 +1451,85 @@ impl Compositor {
         queue!(writer, ResetColor)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buf() -> ScreenBuffer {
+        ScreenBuffer::new(80, 24)
+    }
+
+    #[test]
+    fn kitty_keyboard_sequences_do_not_move_cursor() {
+        let mut b = buf();
+        b.process(b"\x1b7"); // save cursor at 0,0
+        b.process(b"\x1b[5;5H");
+        assert_eq!(b.cursor(), (4, 4));
+        // Kitty keyboard protocol: query, push flags, pop flags.
+        // None of these may execute the unprefixed "restore cursor" (CSI u).
+        b.process(b"\x1b[?u");
+        b.process(b"\x1b[>1u");
+        b.process(b"\x1b[<u");
+        assert_eq!(b.cursor(), (4, 4));
+    }
+
+    #[test]
+    fn xtsave_xtrestore_do_not_touch_cursor_or_scroll_region() {
+        let mut b = buf();
+        b.process(b"\x1b[3;10r"); // set scroll region
+        b.process(b"\x1b[5;5H");
+        b.process(b"\x1b[?2004s\x1b[?2004r"); // XTSAVE/XTRESTORE private modes
+        assert_eq!(b.cursor(), (4, 4));
+        assert_eq!(b.scroll_top, 2);
+        assert_eq!(b.scroll_bottom, 9);
+    }
+
+    #[test]
+    fn unprefixed_ansi_save_restore_still_works() {
+        let mut b = buf();
+        b.process(b"\x1b[5;5H\x1b[s");
+        b.process(b"\x1b[10;20H\x1b[u");
+        assert_eq!(b.cursor(), (4, 4));
+    }
+
+    #[test]
+    fn xtmodkeys_does_not_set_attributes() {
+        let mut b = buf();
+        b.process(b"\x1b[>4;2m"); // XTMODKEYS - must not be parsed as SGR dim
+        b.process(b"X");
+        let cell = b.get(0, 0);
+        assert_eq!(cell.ch, 'X');
+        assert!(!cell.attrs.has(Attrs::DIM));
+    }
+
+    #[test]
+    fn private_modes_still_handled() {
+        let mut b = buf();
+        b.process(b"\x1b[?25l");
+        assert!(!b.cursor_visible());
+        b.process(b"\x1b[?1049h");
+        assert!(b.in_alternate_screen);
+        b.process(b"\x1b[?1049l");
+        assert!(!b.in_alternate_screen);
+    }
+
+    #[test]
+    fn combined_private_modes_in_one_sequence() {
+        let mut b = buf();
+        b.process(b"\x1b[?25;1049h");
+        assert!(b.in_alternate_screen);
+        assert!(b.cursor_visible());
+    }
+
+    #[test]
+    fn device_attribute_queries() {
+        let mut b = buf();
+        b.process(b"\x1b[c");
+        assert_eq!(b.drain_responses(), vec![b"\x1b[?1;0c".to_vec()]);
+        b.process(b"\x1b[>c");
+        assert_eq!(b.drain_responses(), vec![b"\x1b[>0;0;0c".to_vec()]);
     }
 }
