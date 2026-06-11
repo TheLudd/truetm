@@ -8,6 +8,22 @@ use crossterm::{
     style::{Color, ResetColor, SetBackgroundColor, SetForegroundColor},
 };
 use std::io::Write;
+use unicode_width::UnicodeWidthChar;
+
+/// Marker stored in the cell to the right of a double-width character.
+/// The wide glyph in the lead cell covers both columns; continuation
+/// cells are never drawn by the compositor.
+pub const WIDE_CONT: char = '\0';
+
+/// Display width of a character as stored in the grid: 2 for wide
+/// (CJK, emoji), 1 for everything else that is printable.
+fn char_width(ch: char) -> usize {
+    UnicodeWidthChar::width(ch).unwrap_or(0)
+}
+
+fn is_wide(ch: char) -> bool {
+    char_width(ch) == 2
+}
 
 /// Text attributes as bitflags
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -168,6 +184,18 @@ impl ScreenBuffer {
         }
 
         self.cells = new_cells;
+
+        // A narrower width can cut a wide-char pair at the right edge,
+        // leaving a lead glyph whose continuation cell was dropped.
+        if width < self.width && width > 0 {
+            for y in 0..height as usize {
+                let last = y * width as usize + (width as usize - 1);
+                if last < self.cells.len() && is_wide(self.cells[last].ch) {
+                    self.cells[last].ch = ' ';
+                }
+            }
+        }
+
         self.width = width;
         self.height = height;
         self.cursor_x = self.cursor_x.min(width.saturating_sub(1));
@@ -627,6 +655,9 @@ impl ScreenBuffer {
             b'X' => {
                 // Erase characters (replace with spaces)
                 let n = params.first().copied().unwrap_or(1).max(1) as usize;
+                self.unsplit_wide_pair(self.cursor_x, self.cursor_y);
+                let last = (self.cursor_x as usize + n - 1).min(self.width as usize - 1) as u16;
+                self.unsplit_wide_pair(last, self.cursor_y);
                 let blank = self.blank_cell();
                 let y = self.cursor_y as usize;
                 let width = self.width as usize;
@@ -640,6 +671,7 @@ impl ScreenBuffer {
             b'P' => {
                 // Delete characters (shift left)
                 let n = params.first().copied().unwrap_or(1).max(1) as usize;
+                self.unsplit_wide_pair(self.cursor_x, self.cursor_y);
                 let y = self.cursor_y as usize;
                 let width = self.width as usize;
                 let x = self.cursor_x as usize;
@@ -656,6 +688,7 @@ impl ScreenBuffer {
             b'@' => {
                 // Insert characters (shift right)
                 let n = params.first().copied().unwrap_or(1).max(1) as usize;
+                self.unsplit_wide_pair(self.cursor_x, self.cursor_y);
                 let y = self.cursor_y as usize;
                 let width = self.width as usize;
                 let x = self.cursor_x as usize;
@@ -950,12 +983,37 @@ impl ScreenBuffer {
     }
 
     fn put_char(&mut self, ch: char) {
-        if self.cursor_x >= self.width {
+        let width = char_width(ch);
+
+        if width == 0 {
+            // VS16 (emoji presentation selector) makes the preceding narrow
+            // char render double-width in terminals; widen its cell so the
+            // grid matches what applications (and the host terminal) expect.
+            // Other zero-width chars (combining marks, ZWJ) can't be stored
+            // in single-char cells and are dropped.
+            if ch == '\u{FE0F}' {
+                self.widen_previous_cell();
+            }
+            return;
+        }
+
+        if width == 2 && self.width < 2 {
+            return; // degenerate one-column pane, glyph can't fit at all
+        }
+
+        // Wrap if the glyph doesn't fit on the current line
+        if self.cursor_x >= self.width || (width == 2 && self.cursor_x + 1 >= self.width) {
             self.cursor_x = 0;
             self.line_feed();
         }
 
-        let idx = (self.cursor_y as usize) * (self.width as usize) + (self.cursor_x as usize);
+        let (x, y) = (self.cursor_x, self.cursor_y);
+        self.unsplit_wide_pair(x, y);
+        if width == 2 {
+            self.unsplit_wide_pair(x + 1, y);
+        }
+
+        let idx = (y as usize) * (self.width as usize) + (x as usize);
         if idx < self.cells.len() {
             self.cells[idx] = Cell {
                 ch,
@@ -964,7 +1022,63 @@ impl ScreenBuffer {
                 attrs: self.current_attrs,
             };
         }
-        self.cursor_x += 1;
+        if width == 2 && idx + 1 < self.cells.len() {
+            self.cells[idx + 1] = Cell {
+                ch: WIDE_CONT,
+                fg: self.current_fg,
+                bg: self.current_bg,
+                attrs: self.current_attrs,
+            };
+        }
+        self.cursor_x += width as u16;
+    }
+
+    /// Upgrade the most recently written (narrow) cell to double width by
+    /// giving it a continuation cell. Used for VS16 emoji presentation.
+    fn widen_previous_cell(&mut self) {
+        if self.cursor_x == 0 || self.cursor_x > self.width {
+            return;
+        }
+        let x = self.cursor_x - 1;
+        let y = self.cursor_y;
+        if x + 1 >= self.width {
+            return; // no room for a continuation cell on this line
+        }
+        let idx = (y as usize) * (self.width as usize) + (x as usize);
+        if idx >= self.cells.len() {
+            return;
+        }
+        let cell = self.cells[idx];
+        if cell.ch == WIDE_CONT || char_width(cell.ch) != 1 {
+            return;
+        }
+        self.unsplit_wide_pair(x + 1, y);
+        self.cells[idx + 1] = Cell {
+            ch: WIDE_CONT,
+            fg: cell.fg,
+            bg: cell.bg,
+            attrs: cell.attrs,
+        };
+        self.cursor_x = x + 2;
+    }
+
+    /// Writing into (x, y) may cut a wide-char pair in half; blank the
+    /// other half so no orphaned glyph or continuation marker remains.
+    fn unsplit_wide_pair(&mut self, x: u16, y: u16) {
+        let width = self.width as usize;
+        let idx = (y as usize) * width + (x as usize);
+        if idx >= self.cells.len() {
+            return;
+        }
+        if self.cells[idx].ch == WIDE_CONT {
+            if x > 0 {
+                self.cells[idx - 1].ch = ' ';
+            }
+        } else if is_wide(self.cells[idx].ch) {
+            if (x as usize) + 1 < width && idx + 1 < self.cells.len() && self.cells[idx + 1].ch == WIDE_CONT {
+                self.cells[idx + 1].ch = ' ';
+            }
+        }
     }
 
     fn line_feed(&mut self) {
@@ -1132,6 +1246,7 @@ impl ScreenBuffer {
     }
 
     fn erase_line_right(&mut self) {
+        self.unsplit_wide_pair(self.cursor_x, self.cursor_y);
         let blank = self.blank_cell();
         let y = self.cursor_y as usize;
         let width = self.width as usize;
@@ -1143,6 +1258,7 @@ impl ScreenBuffer {
     }
 
     fn erase_line_left(&mut self) {
+        self.unsplit_wide_pair(self.cursor_x, self.cursor_y);
         let blank = self.blank_cell();
         let y = self.cursor_y as usize;
         let width = self.width as usize;
@@ -1408,6 +1524,17 @@ impl Compositor {
                     }
                 }
 
+                // Continuation cell of a wide glyph: the lead cell's glyph
+                // already covers this column, so emit nothing and force a
+                // cursor re-sync before the next write.
+                if cell.ch == WIDE_CONT {
+                    if screen_idx < self.last_frame.len() {
+                        self.last_frame[screen_idx] = RenderedCell { cell, focused };
+                    }
+                    need_move = true;
+                    continue;
+                }
+
                 // Cell changed - emit it
                 if need_move {
                     queue!(writer, MoveTo(screen_x, screen_y))?;
@@ -1471,6 +1598,12 @@ impl Compositor {
                 }
 
                 write!(writer, "{}", cell.ch)?;
+
+                // A wide glyph advances the host cursor by 2 columns, not 1;
+                // force a MoveTo before the next write so positions can't drift.
+                if is_wide(cell.ch) {
+                    need_move = true;
+                }
 
                 // Update last_frame
                 if screen_idx < self.last_frame.len() {
@@ -1607,6 +1740,77 @@ mod tests {
         seq.extend(b"\x1b\\CLICK\x1b]8;;\x1b\\");
         b.process(&seq);
         assert_eq!(row_text(&b, 0), "CLICK");
+    }
+
+    #[test]
+    fn wide_char_occupies_two_cells() {
+        let mut b = buf();
+        b.process("🙂X".as_bytes());
+        assert_eq!(b.get(0, 0).ch, '🙂');
+        assert_eq!(b.get(1, 0).ch, WIDE_CONT);
+        assert_eq!(b.get(2, 0).ch, 'X');
+        assert_eq!(b.cursor(), (3, 0));
+    }
+
+    #[test]
+    fn cursor_position_report_counts_wide_chars() {
+        let mut b = buf();
+        b.process("🙂".as_bytes());
+        b.process(b"\x1b[6n");
+        assert_eq!(b.drain_responses(), vec![b"\x1b[1;3R".to_vec()]);
+    }
+
+    #[test]
+    fn vs16_widens_previous_cell() {
+        let mut b = buf();
+        // U+26A0 WARNING SIGN is narrow; with VS16 it renders as emoji (wide)
+        b.process("\u{26A0}\u{FE0F}X".as_bytes());
+        assert_eq!(b.get(0, 0).ch, '\u{26A0}');
+        assert_eq!(b.get(1, 0).ch, WIDE_CONT);
+        assert_eq!(b.get(2, 0).ch, 'X');
+    }
+
+    #[test]
+    fn combining_chars_are_dropped_not_misplaced() {
+        let mut b = buf();
+        b.process("e\u{0301}x".as_bytes()); // e + combining acute accent
+        assert_eq!(b.get(0, 0).ch, 'e');
+        assert_eq!(b.get(1, 0).ch, 'x');
+        assert_eq!(b.cursor(), (2, 0));
+    }
+
+    #[test]
+    fn wide_char_wraps_when_it_does_not_fit() {
+        let mut b = buf();
+        b.process(b"\x1b[1;80H"); // last column
+        b.process("🙂".as_bytes());
+        assert_eq!(b.get(0, 1).ch, '🙂');
+        assert_eq!(b.get(1, 1).ch, WIDE_CONT);
+        assert_eq!(b.cursor(), (2, 1));
+    }
+
+    #[test]
+    fn overwriting_half_a_wide_pair_blanks_the_other_half() {
+        let mut b = buf();
+        b.process("🙂".as_bytes());
+        b.process(b"\rA"); // overwrite the lead cell
+        assert_eq!(b.get(0, 0).ch, 'A');
+        assert_eq!(b.get(1, 0).ch, ' ');
+
+        b.process(b"\x1b[2J\x1b[H");
+        b.process("🙂".as_bytes());
+        b.process(b"\x1b[1;2HB"); // overwrite the continuation cell
+        assert_eq!(b.get(0, 0).ch, ' ');
+        assert_eq!(b.get(1, 0).ch, 'B');
+    }
+
+    #[test]
+    fn erase_line_right_from_continuation_blanks_lead() {
+        let mut b = buf();
+        b.process("🙂".as_bytes());
+        b.process(b"\x1b[1;2H\x1b[K"); // erase from the continuation cell
+        assert_eq!(b.get(0, 0).ch, ' ');
+        assert_eq!(b.get(1, 0).ch, ' ');
     }
 
     #[test]

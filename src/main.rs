@@ -1193,7 +1193,9 @@ impl App {
 
             for x in line_start..=line_end {
                 let cell = buffer.get(x, y);
-                result.push(cell.ch);
+                if cell.ch != render::WIDE_CONT {
+                    result.push(cell.ch);
+                }
             }
             // Trim trailing spaces from each line
             if y < end_y {
@@ -1265,10 +1267,12 @@ impl App {
 
 /// Static helper to get line content (avoids borrow issues in closures)
 fn get_line_content_static(buffer: &ScreenBuffer, buffer_y: i32) -> Vec<char> {
+    // Continuation cells of wide chars become spaces so that indices in the
+    // returned Vec keep mapping 1:1 to buffer columns (copy mode relies on it).
     let mut line = Vec::new();
     for x in 0..buffer.width() {
         let cell = buffer.get_at_scroll_offset(x, buffer_y);
-        line.push(cell.ch);
+        line.push(if cell.ch == render::WIDE_CONT { ' ' } else { cell.ch });
     }
     line
 }
@@ -1294,7 +1298,9 @@ impl App {
 
             for x in line_start..=line_end {
                 let cell = buffer.get_at_scroll_offset(x, y);
-                result.push(cell.ch);
+                if cell.ch != render::WIDE_CONT {
+                    result.push(cell.ch);
+                }
             }
             // Trim trailing spaces from each line
             if y < end.y {
