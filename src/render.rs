@@ -1402,6 +1402,8 @@ fn ansi_to_bright_color(n: u16) -> Color {
 struct RenderedCell {
     cell: Cell,
     focused: bool,
+    selected: bool,
+    search_match: bool,
 }
 
 impl Default for RenderedCell {
@@ -1409,6 +1411,8 @@ impl Default for RenderedCell {
         Self {
             cell: Cell::default(),
             focused: true,
+            selected: false,
+            search_match: false,
         }
     }
 }
@@ -1512,12 +1516,15 @@ impl Compositor {
                 let is_match = is_in_search_match(x, y);
 
                 // Check if this cell needs updating
+                let rendered = RenderedCell {
+                    cell,
+                    focused,
+                    selected: is_selected,
+                    search_match: is_match,
+                };
                 let screen_idx = (screen_y as usize) * (self.width as usize) + (screen_x as usize);
                 if screen_idx < self.last_frame.len() {
-                    let last = &self.last_frame[screen_idx];
-                    if last.cell == cell && last.focused == focused
-                        && !is_selected && !last_selected
-                        && !is_match && !last_search_match {
+                    if self.last_frame[screen_idx] == rendered {
                         // Cell unchanged, skip it
                         need_move = true;
                         continue;
@@ -1529,7 +1536,7 @@ impl Compositor {
                 // cursor re-sync before the next write.
                 if cell.ch == WIDE_CONT {
                     if screen_idx < self.last_frame.len() {
-                        self.last_frame[screen_idx] = RenderedCell { cell, focused };
+                        self.last_frame[screen_idx] = rendered;
                     }
                     need_move = true;
                     continue;
@@ -1607,7 +1614,7 @@ impl Compositor {
 
                 // Update last_frame
                 if screen_idx < self.last_frame.len() {
-                    self.last_frame[screen_idx] = RenderedCell { cell, focused };
+                    self.last_frame[screen_idx] = rendered;
                 }
             }
 
@@ -1662,6 +1669,47 @@ mod tests {
         b.process(b"\x1b[5;5H\x1b[s");
         b.process(b"\x1b[10;20H\x1b[u");
         assert_eq!(b.cursor(), (4, 4));
+    }
+
+    #[test]
+    fn shrinking_selection_repaints_deselected_rows() {
+        let mut b = buf();
+        b.process(b"aaaaaaaa\r\nbbbbbbbb\r\ncccccccc");
+
+        let mut comp = Compositor::new(80, 24);
+        let rect = Rect::new(0, 0, 80, 24);
+
+        // Select rows 0-2, then shrink back to a single cell on row 0.
+        let mut out = Vec::new();
+        comp.render_pane(&mut out, &b, rect, true, 0, Some((0, 0, 5, 2)), &[])
+            .unwrap();
+        let mut out = Vec::new();
+        comp.render_pane(&mut out, &b, rect, true, 0, Some((0, 0, 0, 0)), &[])
+            .unwrap();
+
+        // Rows 1 and 2 were highlighted and must be repainted (MoveTo is 1-based).
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("\x1b[2;1H"), "row 1 not repainted: {:?}", out);
+        assert!(out.contains("\x1b[3;1H"), "row 2 not repainted: {:?}", out);
+        assert!(out.contains('b') && out.contains('c'));
+    }
+
+    #[test]
+    fn unchanged_frame_emits_no_cells() {
+        let mut b = buf();
+        b.process(b"hello");
+
+        let mut comp = Compositor::new(80, 24);
+        let rect = Rect::new(0, 0, 80, 24);
+
+        let mut out = Vec::new();
+        comp.render_pane(&mut out, &b, rect, true, 0, None, &[]).unwrap();
+        let mut out = Vec::new();
+        comp.render_pane(&mut out, &b, rect, true, 0, None, &[]).unwrap();
+
+        // Second identical frame should skip every cell.
+        let out = String::from_utf8(out).unwrap();
+        assert!(!out.contains('h'), "unchanged cells were re-emitted: {:?}", out);
     }
 
     #[test]
