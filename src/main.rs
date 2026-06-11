@@ -1589,16 +1589,31 @@ impl App {
         // Draw title if present
         if let Some(title) = title {
             if available_for_title > 2 {
+                use unicode_width::UnicodeWidthChar;
                 write!(stdout, " ")?;
                 remaining -= 1;
-                // Truncate title if too long (leave room for trailing line and indicator)
-                let max_title_len = available_for_title.saturating_sub(2);
-                if title.len() <= max_title_len {
+                // Truncate by display width (titles can contain multi-byte
+                // and double-width characters), leaving room for the
+                // trailing line and indicator
+                let max_title_width = available_for_title.saturating_sub(2);
+                let title_width: usize = title.chars()
+                    .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+                    .sum();
+                if title_width <= max_title_width {
                     write!(stdout, "{}", title)?;
-                    remaining -= title.len();
-                } else if max_title_len > 3 {
-                    write!(stdout, "{}…", &title[..max_title_len - 1])?;
-                    remaining -= max_title_len;
+                    remaining = remaining.saturating_sub(title_width);
+                } else if max_title_width > 3 {
+                    let mut written = 0usize;
+                    for c in title.chars() {
+                        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+                        if written + w > max_title_width - 1 {
+                            break;
+                        }
+                        write!(stdout, "{}", c)?;
+                        written += w;
+                    }
+                    write!(stdout, "…")?;
+                    remaining = remaining.saturating_sub(written + 1);
                 }
                 write!(stdout, " ")?;
                 remaining = remaining.saturating_sub(1);
