@@ -106,7 +106,15 @@ enum ParseState {
     Osc,
     Dcs,           // Device Control String (ESC P ... ST)
     CharsetSelect, // ESC ( X, ESC ) X - consume next byte
+    CsiIgnore,     // Oversized CSI - consume until final byte, discard
+    OscIgnore,     // Oversized OSC - consume until BEL/ST, discard
 }
+
+/// Parse buffer limits. Sequences longer than this are consumed and
+/// discarded (never executed), but must not spill back into the
+/// character stream as literal text.
+const MAX_CSI_LEN: usize = 256;
+const MAX_OSC_LEN: usize = 4096;
 
 impl ScreenBuffer {
     pub fn new(width: u16, height: u16) -> Self {
@@ -179,6 +187,8 @@ impl ScreenBuffer {
                 ParseState::Osc => self.process_osc(byte),
                 ParseState::Dcs => self.process_dcs(byte),
                 ParseState::CharsetSelect => self.process_charset_select(byte),
+                ParseState::CsiIgnore => self.process_csi_ignore(byte),
+                ParseState::OscIgnore => self.process_osc_ignore(byte),
             }
         }
     }
@@ -387,10 +397,18 @@ impl ScreenBuffer {
             self.parse_state = ParseState::Normal;
         } else {
             self.parse_buffer.push(byte);
-            // Sanity limit
-            if self.parse_buffer.len() > 64 {
-                self.parse_state = ParseState::Normal;
+            if self.parse_buffer.len() > MAX_CSI_LEN {
+                self.parse_state = ParseState::CsiIgnore;
+                self.parse_buffer.clear();
             }
+        }
+    }
+
+    fn process_csi_ignore(&mut self, byte: u8) {
+        // Consume the rest of an oversized CSI sequence without executing
+        // it. Bailing to Normal mid-sequence would print the tail as text.
+        if byte >= 0x40 && byte <= 0x7e {
+            self.parse_state = ParseState::Normal;
         }
     }
 
@@ -409,9 +427,27 @@ impl ScreenBuffer {
             self.parse_state = ParseState::Normal;
         } else {
             self.parse_buffer.push(byte);
-            if self.parse_buffer.len() > 256 {
-                self.parse_state = ParseState::Normal;
+            if self.parse_buffer.len() > MAX_OSC_LEN {
+                self.parse_state = ParseState::OscIgnore;
+                self.parse_buffer.clear();
             }
+        }
+    }
+
+    fn process_osc_ignore(&mut self, byte: u8) {
+        // Consume the rest of an oversized OSC without storing or executing
+        // it. Terminated by BEL, C1 ST, or ESC \ (tracked via parse_buffer
+        // holding a single pending ESC, like process_dcs).
+        if byte == 0x07 || byte == 0x9c {
+            self.parse_state = ParseState::Normal;
+            self.parse_buffer.clear();
+        } else if byte == 0x1b {
+            self.parse_buffer.push(byte);
+        } else if byte == b'\\' && self.parse_buffer.last() == Some(&0x1b) {
+            self.parse_state = ParseState::Normal;
+            self.parse_buffer.clear();
+        } else {
+            self.parse_buffer.clear();
         }
     }
 
@@ -1531,5 +1567,56 @@ mod tests {
         assert_eq!(b.drain_responses(), vec![b"\x1b[?1;0c".to_vec()]);
         b.process(b"\x1b[>c");
         assert_eq!(b.drain_responses(), vec![b"\x1b[>0;0;0c".to_vec()]);
+    }
+
+    fn row_text(b: &ScreenBuffer, y: u16) -> String {
+        (0..b.width()).map(|x| b.get(x, y).ch).collect::<String>().trim_end().to_string()
+    }
+
+    #[test]
+    fn long_sgr_sequence_parses_fully() {
+        let mut b = buf();
+        // ~69 bytes of parameters - used to overflow the old 64-byte limit
+        b.process(b"\x1b[38;2;200;100;50;48;2;30;30;30;1;3;4;9;38;2;100;200;50;48;2;60;60;60mHI");
+        assert_eq!(row_text(&b, 0), "HI");
+        let cell = b.get(0, 0);
+        assert_eq!(cell.fg, Some(Color::Rgb { r: 100, g: 200, b: 50 }));
+        assert_eq!(cell.bg, Some(Color::Rgb { r: 60, g: 60, b: 60 }));
+        assert!(cell.attrs.has(Attrs::BOLD));
+    }
+
+    #[test]
+    fn oversized_csi_is_discarded_without_spilling_text() {
+        let mut b = buf();
+        let mut seq = b"\x1b[".to_vec();
+        seq.extend(std::iter::repeat(b"1;".as_slice()).take(300).flatten());
+        seq.push(b'm');
+        seq.extend(b"OK");
+        b.process(&seq);
+        assert_eq!(row_text(&b, 0), "OK");
+        // The discarded sequence must not have applied its parameters either
+        assert!(!b.get(0, 0).attrs.has(Attrs::BOLD));
+    }
+
+    #[test]
+    fn oversized_osc_is_discarded_without_spilling_text() {
+        let mut b = buf();
+        // OSC 8 hyperlink with a URL beyond MAX_OSC_LEN, ST-terminated
+        let mut seq = b"\x1b]8;;http://example.com/".to_vec();
+        seq.extend(std::iter::repeat(b'a').take(MAX_OSC_LEN + 100));
+        seq.extend(b"\x1b\\CLICK\x1b]8;;\x1b\\");
+        b.process(&seq);
+        assert_eq!(row_text(&b, 0), "CLICK");
+    }
+
+    #[test]
+    fn oversized_osc_bel_terminated() {
+        let mut b = buf();
+        let mut seq = b"\x1b]0;".to_vec();
+        seq.extend(std::iter::repeat(b't').take(MAX_OSC_LEN + 100));
+        seq.push(0x07);
+        seq.extend(b"AFTER");
+        b.process(&seq);
+        assert_eq!(row_text(&b, 0), "AFTER");
     }
 }
