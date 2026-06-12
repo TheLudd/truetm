@@ -738,11 +738,14 @@ impl ScreenBuffer {
                         self.response_queue.push(b"\x1b[0n".to_vec());
                     }
                     6 => {
-                        // Cursor position report - respond with CSI row;col R
+                        // Cursor position report - respond with CSI row;col R.
+                        // With wrap pending (cursor past the last column) real
+                        // terminals report the last column, not one beyond it.
+                        let col = self.cursor_x.min(self.width.saturating_sub(1));
                         let response = format!(
                             "\x1b[{};{}R",
                             self.cursor_y + 1,
-                            self.cursor_x + 1
+                            col + 1
                         );
                         self.response_queue.push(response.into_bytes());
                     }
@@ -1788,6 +1791,19 @@ mod tests {
         seq.extend(b"\x1b\\CLICK\x1b]8;;\x1b\\");
         b.process(&seq);
         assert_eq!(row_text(&b, 0), "CLICK");
+    }
+
+    #[test]
+    fn dsr_reports_last_column_when_wrap_is_pending() {
+        let mut b = buf();
+        for _ in 0..80 {
+            b.process(b"x");
+        }
+        b.process(b"\x1b[6n");
+        assert_eq!(b.drain_responses(), vec![b"\x1b[1;80R".to_vec()]);
+        // The next printed char still wraps to the following line
+        b.process(b"y");
+        assert_eq!(b.get(0, 1).ch, 'y');
     }
 
     #[test]
