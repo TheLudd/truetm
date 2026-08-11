@@ -159,11 +159,25 @@ impl Pane {
         Ok(())
     }
 
-    /// Update the pane's rectangle with explicit PTY size
-    pub fn set_rect_with_size(&mut self, rect: Rect, pty_cols: u16, pty_rows: u16) -> Result<()> {
-        self.resize(pty_cols, pty_rows)?;
+    /// Update the pane's rectangle with explicit PTY size.
+    /// PTY resize failures (e.g. the child already died) are logged, not
+    /// fatal: the pane is cleaned up via its Exit message either way, and
+    /// the rect must still be updated so rendering stays consistent.
+    pub fn set_rect_with_size(&mut self, rect: Rect, pty_cols: u16, pty_rows: u16) {
         self.rect = rect;
-        Ok(())
+        if let Err(e) = self.resize(pty_cols, pty_rows) {
+            log::warn!("pane {:?}: PTY resize failed: {}", self.id, e);
+        }
+    }
+}
+
+impl Drop for Pane {
+    fn drop(&mut self) {
+        // Kill and reap the child; without the wait, every closed or
+        // exited shell lingers as a zombie for the session's lifetime
+        // (portable-pty's Child does not reap on drop).
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

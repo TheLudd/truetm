@@ -207,6 +207,12 @@ impl ScreenBuffer {
 
     /// Process raw bytes from PTY
     pub fn process(&mut self, data: &[u8]) {
+        // A pane too small to have a content area (e.g. many stack panes in
+        // a short terminal) gets a zero-height buffer with no cells; the
+        // scroll and erase paths index into the grid and would panic.
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
         for &byte in data {
             match self.parse_state {
                 ParseState::Normal => self.process_normal(byte),
@@ -1155,15 +1161,19 @@ impl ScreenBuffer {
             return;
         }
 
+        // A count larger than the space below the cursor just clears that
+        // space; unclamped it would shift rows past the end of the buffer.
+        let n = n.min(bottom - y + 1);
+
         // Move lines down within scroll region (reverse order to avoid overwriting)
-        for row in (y..=bottom.saturating_sub(n)).rev() {
+        for row in (y..bottom + 1 - n).rev() {
             let src = row * width;
             let dst = (row + n) * width;
             self.cells.copy_within(src..src + width, dst);
         }
         // Clear inserted lines
         let blank = self.blank_cell();
-        for row in y..(y + n).min(bottom + 1) {
+        for row in y..y + n {
             let start = row * width;
             for cell in &mut self.cells[start..start + width] {
                 *cell = blank;
@@ -1181,6 +1191,10 @@ impl ScreenBuffer {
             return;
         }
 
+        // Clamp like insert_lines: never touch rows above the cursor (an
+        // oversized count used to clear rows above the scroll region too).
+        let n = n.min(bottom - y + 1);
+
         // Move lines up within scroll region using copy_within
         let src_start = (y + n) * width;
         let src_end = (bottom + 1) * width;
@@ -1191,7 +1205,7 @@ impl ScreenBuffer {
 
         // Clear bottom lines of scroll region
         let blank = self.blank_cell();
-        for row in (bottom + 1).saturating_sub(n)..=bottom {
+        for row in (bottom + 1 - n)..=bottom {
             let start = row * width;
             for cell in &mut self.cells[start..start + width] {
                 *cell = blank;
@@ -1875,6 +1889,63 @@ mod tests {
         b.process(b"\x1b[1;2H\x1b[K"); // erase from the continuation cell
         assert_eq!(b.get(0, 0).ch, ' ');
         assert_eq!(b.get(1, 0).ch, ' ');
+    }
+
+    #[test]
+    fn oversized_insert_delete_lines_do_not_panic() {
+        // Seen in the wild: pasting binary data (e.g. an image) as text
+        // produces CSI L/M with arbitrary counts.
+        let mut b = buf();
+        b.process(b"top");
+        b.process(b"\x1b[H\x1b[99L");
+        b.process(b"\x1b[99M");
+        b.process(b"ok");
+        assert_eq!(row_text(&b, 0), "ok");
+    }
+
+    #[test]
+    fn insert_lines_shifts_content_down() {
+        let mut b = buf();
+        b.process(b"AAA\r\nBBB");
+        b.process(b"\x1b[H\x1b[1L");
+        assert_eq!(row_text(&b, 0), "");
+        assert_eq!(row_text(&b, 1), "AAA");
+        assert_eq!(row_text(&b, 2), "BBB");
+    }
+
+    #[test]
+    fn delete_lines_shifts_content_up() {
+        let mut b = buf();
+        b.process(b"AAA\r\nBBB\r\nCCC");
+        b.process(b"\x1b[H\x1b[1M");
+        assert_eq!(row_text(&b, 0), "BBB");
+        assert_eq!(row_text(&b, 1), "CCC");
+    }
+
+    #[test]
+    fn huge_delete_lines_does_not_clear_above_scroll_region() {
+        let mut b = buf();
+        b.process(b"KEEP");
+        b.process(b"\x1b[5;10r"); // scroll region rows 5-10
+        b.process(b"\x1b[5;1H\x1b[99M");
+        // Row 0 is outside the scroll region and must survive
+        assert_eq!(row_text(&b, 0), "KEEP");
+    }
+
+    #[test]
+    fn zero_height_buffer_ignores_output() {
+        let mut b = ScreenBuffer::new(80, 0);
+        b.process(b"hello\r\nworld\x1b[2J\x1b[99L\x1b[6n");
+        assert_eq!(b.cursor(), (0, 0));
+
+        // Same via resize (the path apply_layout takes)
+        let mut b = buf();
+        b.process(b"data");
+        b.resize(80, 0);
+        b.process(b"more\r\n\n");
+        b.resize(80, 24);
+        b.process(b"\rback");
+        assert_eq!(row_text(&b, 0), "back");
     }
 
     #[test]

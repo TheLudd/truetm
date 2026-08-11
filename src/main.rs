@@ -232,7 +232,7 @@ impl App {
         self.panes.add(pane);
         self.buffers.insert(id, ScreenBuffer::new(rect.width, buffer_height));
 
-        self.apply_layout()?;
+        self.apply_layout();
         self.save_tag_state();
         self.needs_redraw = true;
 
@@ -260,9 +260,7 @@ impl App {
                 false
             };
 
-            if let Err(e) = self.apply_layout() {
-                log::error!("Failed to apply layout after closing pane: {}", e);
-            }
+            self.apply_layout();
 
             // Restore tag state if we switched tags
             if went_to_previous {
@@ -276,7 +274,7 @@ impl App {
     }
 
     /// Apply the current layout to visible panes
-    fn apply_layout(&mut self) -> Result<()> {
+    fn apply_layout(&mut self) {
         // Only layout panes visible in current view
         let pane_ids = self.panes.visible_in_view(self.current_view);
         // Content area excludes status bar (1 row at bottom)
@@ -290,7 +288,7 @@ impl App {
                 // Give zoomed pane the full area
                 let buffer_height = area.height.saturating_sub(1);
                 if let Some(pane) = self.panes.get_mut(zoomed_id) {
-                    pane.set_rect_with_size(area, area.width, buffer_height)?;
+                    pane.set_rect_with_size(area, area.width, buffer_height);
                 }
                 if let Some(buffer) = self.buffers.get_mut(&zoomed_id) {
                     buffer.resize(area.width, buffer_height);
@@ -306,7 +304,8 @@ impl App {
             } else {
                 // Zoomed pane no longer visible, exit zoom mode
                 self.zoomed_pane = None;
-                return self.apply_layout(); // Re-apply without zoom
+                self.apply_layout(); // Re-apply without zoom
+                return;
             }
         } else {
             // Normal layout
@@ -319,7 +318,7 @@ impl App {
                 // Buffer/PTY height is rect.height - 1 to reserve header row
                 let buffer_height = rect.height.saturating_sub(1);
                 if let Some(pane) = self.panes.get_mut(pane_id) {
-                    pane.set_rect_with_size(rect, rect.width, buffer_height)?;
+                    pane.set_rect_with_size(rect, rect.width, buffer_height);
                 }
                 if let Some(buffer) = self.buffers.get_mut(&pane_id) {
                     buffer.resize(rect.width, buffer_height);
@@ -341,18 +340,15 @@ impl App {
 
         // Force full redraw when layout changes
         self.compositor.invalidate();
-
-        Ok(())
     }
 
     /// Handle resize
-    fn resize(&mut self, width: u16, height: u16) -> Result<()> {
+    fn resize(&mut self, width: u16, height: u16) {
         self.width = width;
         self.height = height;
         self.compositor.resize(width, height.saturating_sub(1)); // -1 for status bar
-        self.apply_layout()?;
+        self.apply_layout();
         self.needs_redraw = true;
-        Ok(())
     }
 
     /// Process PTY output, returns true if any data was processed
@@ -401,9 +397,7 @@ impl App {
                 false
             };
 
-            if let Err(e) = self.apply_layout() {
-                log::error!("Failed to apply layout after removing exited panes: {}", e);
-            }
+            self.apply_layout();
 
             // Restore tag state if we switched tags
             if went_to_previous {
@@ -418,8 +412,11 @@ impl App {
         had_data
     }
 
-    /// Handle keyboard input
-    fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+    /// Handle keyboard input.
+    /// Per-pane failures (a PTY write to a dying shell, a pane that could
+    /// not be created) are logged, never propagated: one bad pane must not
+    /// take down the whole session.
+    fn handle_key(&mut self, key: KeyEvent) {
         // Check for prefix key
         if !self.prefix_mode
             && self.pending_command.is_none()
@@ -427,7 +424,7 @@ impl App {
             && key.code == config::PREFIX_KEY
         {
             self.prefix_mode = true;
-            return Ok(());
+            return;
         }
 
         // Handle pending command (waiting for a number after v/t/T)
@@ -443,16 +440,18 @@ impl App {
                                 self.switch_to_tag(tag);
                                 // Auto-create pane if tag is empty
                                 if self.panes.visible_in_view(self.current_view).is_empty() {
-                                    self.create_pane()?;
+                                    if let Err(e) = self.create_pane() {
+                                        log::error!("failed to create pane: {:#}", e);
+                                    }
                                 }
-                                self.apply_layout()?;
+                                self.apply_layout();
                                 // Restore saved focus and broadcast state for this tag
                                 self.restore_tag_state(tag);
                                 self.needs_redraw = true;
                             } else if num == 0 {
                                 // View all tags (doesn't affect history)
                                 self.current_view = TagSet::ALL;
-                                self.apply_layout()?;
+                                self.apply_layout();
                                 self.needs_redraw = true;
                             }
                         }
@@ -462,7 +461,7 @@ impl App {
                                 if let Some(pane) = self.panes.focused_mut() {
                                     pane.tags = TagSet::single(tag);
                                 }
-                                self.apply_layout()?;
+                                self.apply_layout();
                                 self.needs_redraw = true;
                             }
                         }
@@ -476,14 +475,14 @@ impl App {
                                         pane.tags = TagSet::single(tag);
                                     }
                                 }
-                                self.apply_layout()?;
+                                self.apply_layout();
                                 self.needs_redraw = true;
                             }
                         }
                     }
                 }
             }
-            return Ok(());
+            return;
         }
 
         if self.prefix_mode {
@@ -501,7 +500,7 @@ impl App {
                             self.save_tag_state();
                             self.needs_redraw = true;
                         }
-                        return Ok(());
+                        return;
                     }
                 }
             }
@@ -511,7 +510,9 @@ impl App {
                     self.running = false;
                 }
                 k if k == config::KEY_NEW_WINDOW => {
-                    self.create_pane()?;
+                    if let Err(e) = self.create_pane() {
+                        log::error!("failed to create pane: {:#}", e);
+                    }
                 }
                 k if k == config::KEY_CLOSE_WINDOW => {
                     self.close_focused_pane();
@@ -541,12 +542,12 @@ impl App {
                 }
                 k if k == config::KEY_MASTER_SHRINK => {
                     self.layout.adjust_master(-config::MASTER_ADJUST_STEP);
-                    self.apply_layout()?;
+                    self.apply_layout();
                     self.needs_redraw = true;
                 }
                 k if k == config::KEY_MASTER_GROW => {
                     self.layout.adjust_master(config::MASTER_ADJUST_STEP);
-                    self.apply_layout()?;
+                    self.apply_layout();
                     self.needs_redraw = true;
                 }
                 k if k == config::PREFIX_KEY => {
@@ -554,13 +555,13 @@ impl App {
                     if let KeyCode::Char(c) = config::PREFIX_KEY {
                         let ctrl_byte = (c.to_ascii_lowercase() as u8) - b'a' + 1;
                         if let Some(pane) = self.panes.focused_mut() {
-                            pane.write(&[ctrl_byte])?;
+                            write_to_pane(pane, &[ctrl_byte]);
                         }
                     }
                 }
                 k if k == config::KEY_SWAP_MASTER => {
                     self.panes.swap_with_master(self.current_view);
-                    self.apply_layout()?;
+                    self.apply_layout();
                     self.save_tag_state();
                     self.needs_redraw = true;
                 }
@@ -625,13 +626,13 @@ impl App {
                             // Zoom on focused pane
                             self.zoomed_pane = Some(focused_id);
                         }
-                        self.apply_layout()?;
+                        self.apply_layout();
                         self.needs_redraw = true;
                     }
                 }
                 _ => {}
             }
-            return Ok(());
+            return;
         }
 
         // Handle copy mode
@@ -687,7 +688,7 @@ impl App {
                 }
                 self.compositor.invalidate();
                 self.needs_redraw = true;
-                return Ok(());
+                return;
             }
 
             // Handle pending find char (f/F/t/T waiting for char)
@@ -711,7 +712,7 @@ impl App {
                 }
                 self.compositor.invalidate();
                 self.needs_redraw = true;
-                return Ok(());
+                return;
             }
 
             // Check if we're in pending text object mode (i/a waiting for object type)
@@ -752,7 +753,7 @@ impl App {
                 }
                 self.compositor.invalidate();
                 self.needs_redraw = true;
-                return Ok(());
+                return;
             }
 
             if let Some(ref mut copy_state) = self.copy_mode {
@@ -1026,7 +1027,9 @@ impl App {
             // Handle yank (needs to be done after match to avoid borrow issues)
             if yank_selection {
                 if let Some(text) = self.extract_copy_mode_selection() {
-                    self.copy_to_clipboard(&text)?;
+                    if let Err(e) = self.copy_to_clipboard(&text) {
+                        log::warn!("clipboard copy failed: {}", e);
+                    }
                 }
                 exit_copy_mode = true;
             }
@@ -1037,7 +1040,7 @@ impl App {
 
             self.compositor.invalidate();
             self.needs_redraw = true;
-            return Ok(());
+            return;
         }
 
         // Forward input to pane(s)
@@ -1047,21 +1050,19 @@ impl App {
             let visible_ids = self.panes.visible_in_view(self.current_view);
             for id in visible_ids {
                 if let Some(pane) = self.panes.get_mut(id) {
-                    pane.write(&bytes)?;
+                    write_to_pane(pane, &bytes);
                 }
             }
         } else {
             // Send to focused pane only
             if let Some(pane) = self.panes.focused_mut() {
-                pane.write(&bytes)?;
+                write_to_pane(pane, &bytes);
             }
         }
-
-        Ok(())
     }
 
     /// Handle mouse input
-    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
         let x = mouse.column;
         let y = mouse.row;
 
@@ -1106,7 +1107,9 @@ impl App {
                     if sel.buf_start_x != sel.buf_end_x || sel.buf_start_y != sel.buf_end_y {
                         // Extract selected text and copy
                         if let Some(text) = self.extract_selection(sel) {
-                            self.copy_to_clipboard(&text)?;
+                            if let Err(e) = self.copy_to_clipboard(&text) {
+                                log::warn!("clipboard copy failed: {}", e);
+                            }
                         }
                     }
                 }
@@ -1149,8 +1152,6 @@ impl App {
             }
             _ => {}
         }
-
-        Ok(())
     }
 
     /// Find which pane contains a screen position, return pane ID and buffer coordinates
@@ -1262,6 +1263,15 @@ impl App {
     /// Get line content from buffer at given buffer Y coordinate (negative = scrollback)
     fn get_line_content(&self, buffer: &ScreenBuffer, buffer_y: i32) -> Vec<char> {
         get_line_content_static(buffer, buffer_y)
+    }
+}
+
+/// Write to a pane's PTY, logging failures instead of propagating them.
+/// Writes race against the shell exiting (the Exit message may not be
+/// processed yet); a failed write must never take down the session.
+fn write_to_pane(pane: &mut Pane, bytes: &[u8]) {
+    if let Err(e) = pane.write(bytes) {
+        log::warn!("pane {:?}: PTY write failed: {}", pane.id, e);
     }
 }
 
@@ -1687,9 +1697,9 @@ fn run() -> Result<()> {
 
         if event::poll(poll_timeout)? {
             match event::read()? {
-                Event::Key(key) => app.handle_key(key)?,
-                Event::Mouse(mouse) => app.handle_mouse(mouse)?,
-                Event::Resize(w, h) => app.resize(w, h)?,
+                Event::Key(key) => app.handle_key(key),
+                Event::Mouse(mouse) => app.handle_mouse(mouse),
+                Event::Resize(w, h) => app.resize(w, h),
                 _ => {}
             }
         }

@@ -70,6 +70,11 @@ big=$(printf 'a%.0s' $(seq 4200))
 check "oversized OSC title (BEL) discarded" 2 "\\x1b]0;${big}\\x07X"
 check "oversized OSC 8 link (ST) discarded" 6 "\\x1b]8;;http://x/${big}\\x1b\\\\CLICK\\x1b]8;;\\x1b\\\\"
 
+# --- oversized line insert/delete must not crash the terminal --------------
+# Pasting binary data (e.g. an image) as text produces CSI L/M with
+# arbitrary counts; these used to index past the end of the grid.
+check "oversized insert/delete lines (99L/99M)" 3 '\x1b[99L\x1b[99Mok'
+
 # --- titles with multi-byte characters must not crash the terminal ---------
 printf '\x1b]0;⚠️🙂 very long unicode title %s\x07' "$big"
 check "unicode title set (no crash)" 3 'ok'
