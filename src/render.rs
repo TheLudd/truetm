@@ -332,10 +332,8 @@ impl ScreenBuffer {
                 self.parse_state = ParseState::CharsetSelect;
             }
             b'M' => {
-                // Reverse line feed
-                if self.cursor_y > 0 {
-                    self.cursor_y -= 1;
-                }
+                // RI - Reverse Index (move up, scroll down at top of region)
+                self.reverse_index();
                 self.parse_state = ParseState::Normal;
             }
             b'7' | b's' => {
@@ -1096,6 +1094,17 @@ impl ScreenBuffer {
             self.scroll_up();
         } else if self.cursor_y + 1 < self.height {
             self.cursor_y += 1;
+        }
+    }
+
+    /// Reverse Index: the mirror of `line_feed`. Pagers such as less scroll
+    /// the view upward by homing the cursor and emitting RI, so at the top
+    /// of the scroll region this must push the region down by one row.
+    fn reverse_index(&mut self) {
+        if self.cursor_y == self.scroll_top {
+            self.scroll_down();
+        } else if self.cursor_y > 0 {
+            self.cursor_y -= 1;
         }
     }
 
@@ -1901,6 +1910,36 @@ mod tests {
         b.process(b"\x1b[99M");
         b.process(b"ok");
         assert_eq!(row_text(&b, 0), "ok");
+    }
+
+    #[test]
+    fn reverse_index_scrolls_region_down_at_top() {
+        // less/delta scroll the view up by homing and emitting RI.
+        let mut b = buf();
+        b.process(b"AAA\r\nBBB\r\nCCC");
+        b.process(b"\x1b[H\x1bM");
+        assert_eq!(b.cursor_y, 0);
+        assert_eq!(row_text(&b, 0), "");
+        assert_eq!(row_text(&b, 1), "AAA");
+        assert_eq!(row_text(&b, 2), "BBB");
+        assert_eq!(row_text(&b, 3), "CCC");
+    }
+
+    #[test]
+    fn reverse_index_respects_scroll_region() {
+        let mut b = buf();
+        b.process(b"AAA\r\nBBB\r\nCCC\r\nDDD");
+        b.process(b"\x1b[2;3r"); // region rows 2-3 (0-based 1..=2)
+        b.process(b"\x1b[2;1H\x1bM"); // cursor at region top
+        assert_eq!(b.cursor_y, 1);
+        assert_eq!(row_text(&b, 0), "AAA");
+        assert_eq!(row_text(&b, 1), "");
+        assert_eq!(row_text(&b, 2), "BBB");
+        assert_eq!(row_text(&b, 3), "DDD");
+        // Above the region RI just moves the cursor.
+        b.process(b"\x1b[1;1H\x1bM");
+        assert_eq!(b.cursor_y, 0);
+        assert_eq!(row_text(&b, 0), "AAA");
     }
 
     #[test]

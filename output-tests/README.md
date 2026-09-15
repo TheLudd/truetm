@@ -30,7 +30,7 @@ probe: run it in st or xterm to see how a reference terminal behaves.
 The e2e test runs this same script inside truetm automatically, so tier 2
 is only needed when testing a terminal by hand.
 
-## 3. Visual checks: `01`-`05`
+## 3. Visual checks: `01`-`06`
 
 The numbered scripts reproduce the original bugs in a form you can see.
 Each documents what correct and buggy output look like in its header.
@@ -49,3 +49,5 @@ which needs a manual tag-switch to force a full repaint.
   hyperlinks, long titles) being discarded instead of spilled as text
 - Multi-byte/unicode window titles not crashing the header renderer
 - Deferred wrap: cursor reported at the last column, next char wraps
+- Reverse Index (`ESC M`) scrolling the region down at the top margin,
+  which is how less/delta scroll upward
