@@ -337,6 +337,20 @@ fn truetm_end_to_end() {
     tm.type_line("printf 'kitty-%b-ok\\n' 'AB\\x1b[?uCD'");
     tm.wait_for("kitty-ABCD-ok", None, Duration::from_secs(10));
 
+    // Mouse passthrough: once the pane app enables SGR mouse tracking, a
+    // wheel event on the host must reach it re-encoded in pane coordinates
+    // (host row 5 is pane row 4: row 1 is the header).
+    tm.type_line(
+        "printf '\\033[?1000h\\033[?1006h'; printf 'mouse-%s\\n' ready; \
+         IFS= read -rs -d M -t 10 m; printf '\\033[?1000l\\033[?1006l'; \
+         case \"$m\" in *'<64;5;4'*) printf 'mouse-fwd-%s\\n' ok;; \
+         *) printf 'mouse-fwd-%s %q\\n' bad \"$m\";; esac",
+    );
+    tm.wait_for("mouse-ready", None, Duration::from_secs(10));
+    tm.writer.write_all(b"\x1b[<64;5;5M").unwrap();
+    tm.writer.flush().unwrap();
+    tm.wait_for("mouse-fwd-ok", Some("mouse-fwd-bad"), Duration::from_secs(10));
+
     // Full escape-sequence suite, self-verified inside the pane via DSR
     tm.type_line("bash output-tests/checks.sh");
     tm.wait_for(

@@ -3,6 +3,7 @@
 mod config;
 mod copy_mode;
 mod layout;
+mod mouse;
 mod pane;
 mod render;
 mod tag;
@@ -1066,6 +1067,10 @@ impl App {
         let x = mouse.column;
         let y = mouse.row;
 
+        if self.forward_mouse_to_pane(&mouse) {
+            return;
+        }
+
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 // Find which pane was clicked
@@ -1152,6 +1157,44 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Forward a mouse event to the pane under the pointer if its
+    /// application enabled mouse tracking. Returns true when the event was
+    /// consumed. Shift bypasses forwarding so truetm's own selection and
+    /// scrollback stay reachable (same convention as st, xterm, tmux), and
+    /// an active copy mode keeps the mouse for scrollback navigation.
+    fn forward_mouse_to_pane(&mut self, mouse: &MouseEvent) -> bool {
+        if mouse.modifiers.contains(KeyModifiers::SHIFT) || self.copy_mode.is_some() {
+            return false;
+        }
+        let Some((pane_id, buf_x, buf_y)) = self.pane_at_position(mouse.column, mouse.row) else {
+            return false;
+        };
+        let Some(buffer) = self.buffers.get(&pane_id) else {
+            return false;
+        };
+        let tracking = buffer.mouse_tracking();
+        if !tracking.wants(mouse.kind) {
+            return false;
+        }
+        let Some(bytes) = mouse::encode(mouse.kind, mouse.modifiers, buf_x, buf_y, buffer.mouse_sgr()) else {
+            return true; // wanted but unencodable: swallow rather than misroute
+        };
+
+        // Clicking a pane focuses it, as it does without mouse tracking
+        if let MouseEventKind::Down(_) = mouse.kind {
+            if self.panes.focused().map(|p| p.id) != Some(pane_id) {
+                self.panes.focus_by_id(pane_id);
+                self.save_tag_state();
+                self.needs_redraw = true;
+            }
+        }
+
+        if let Some(pane) = self.panes.get_mut(pane_id) {
+            write_to_pane(pane, &bytes);
+        }
+        true
     }
 
     /// Find which pane contains a screen position, return pane ID and buffer coordinates

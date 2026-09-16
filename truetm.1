@@ -166,6 +166,12 @@ Select text within a pane.
 .TP
 .B Scroll wheel
 Scroll through scrollback buffer (enters copy mode automatically).
+.PP
+When the application in a window enables mouse reporting (vim, less, htop,
+Claude Code, ...), mouse events inside that window are forwarded to the
+application instead. Hold
+.B Shift
+to bypass the application and use truetm's own selection and scrollback.
 .SH LAYOUT
 Master window on the left, remaining windows stacked vertically on the right.
 .SH TAGS

@@ -158,6 +158,11 @@ Scrollback stores up to 10,000 lines of history per window.
 | Click and drag | Select text within a pane                   |
 | Scroll wheel   | Scroll through scrollback (enters copy mode)|
 
+Applications that enable mouse reporting (Claude Code, vim, less with
+`--mouse`, htop, ...) receive mouse events directly, so the wheel scrolls
+the application rather than truetm's scrollback. Hold Shift to bypass the
+application and use truetm's own selection and scrollback instead.
+
 ## Author
 
 Fully vibe coded with [Claude Code](https://claude.com/claude-code) and Opus 4.5.

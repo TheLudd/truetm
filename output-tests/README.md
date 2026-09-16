@@ -51,3 +51,5 @@ which needs a manual tag-switch to force a full repaint.
 - Deferred wrap: cursor reported at the last column, next char wraps
 - Reverse Index (`ESC M`) scrolling the region down at the top margin,
   which is how less/delta scroll upward
+- Mouse passthrough: wheel events reach a pane app that enabled SGR mouse
+  tracking, re-encoded in pane coordinates (e2e only)

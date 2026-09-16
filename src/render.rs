@@ -1,6 +1,7 @@
 //! Rendering - screen buffers and compositor
 
 use crate::config;
+use crate::mouse::MouseTracking;
 use crate::pane::Rect;
 use crossterm::{
     cursor::MoveTo,
@@ -112,6 +113,10 @@ pub struct ScreenBuffer {
     // Scrollback buffer - lines that scrolled off the top
     scrollback: std::collections::VecDeque<Vec<Cell>>,
     scrollback_limit: usize,
+    // Mouse reporting requested by the application (DECSET 1000/1002/1003)
+    mouse_tracking: MouseTracking,
+    // SGR mouse encoding requested (DECSET 1006)
+    mouse_sgr: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -158,6 +163,8 @@ impl ScreenBuffer {
             scroll_bottom: height.saturating_sub(1),
             scrollback: std::collections::VecDeque::new(),
             scrollback_limit: DEFAULT_SCROLLBACK,
+            mouse_tracking: MouseTracking::Off,
+            mouse_sgr: false,
         }
     }
 
@@ -361,6 +368,8 @@ impl ScreenBuffer {
                 self.current_fg = None;
                 self.current_bg = None;
                 self.current_attrs.reset();
+                self.mouse_tracking = MouseTracking::Off;
+                self.mouse_sgr = false;
                 self.parse_state = ParseState::Normal;
             }
             b'D' => {
@@ -789,11 +798,26 @@ impl ScreenBuffer {
                     self.leave_alternate_screen();
                 }
             }
-            // Mouse tracking modes - we ignore these but must consume them
-            // so the escape sequences don't leak through
-            1000 | 1002 | 1003 | 1006 | 1015 => {
-                // Mouse tracking: normal, button, any-event, SGR, URXVT
-                // We don't support mouse input, just ignore
+            // Mouse tracking: the application wants mouse events forwarded.
+            // The three tracking modes are mutually exclusive in xterm;
+            // resetting any of them turns tracking off.
+            1000 | 1002 | 1003 => {
+                self.mouse_tracking = if !is_set {
+                    MouseTracking::Off
+                } else {
+                    match mode {
+                        1000 => MouseTracking::Normal,
+                        1002 => MouseTracking::Button,
+                        _ => MouseTracking::Any,
+                    }
+                };
+            }
+            1006 => {
+                // SGR extended coordinates
+                self.mouse_sgr = is_set;
+            }
+            1015 => {
+                // URXVT extended mode - not supported, consume silently
             }
             // Bracketed paste mode
             2004 => {
@@ -1325,6 +1349,16 @@ impl ScreenBuffer {
     /// DECSCUSR cursor style: 0 = terminal default, 1/2 = block, 3/4 = underline, 5/6 = bar.
     pub fn cursor_style(&self) -> u8 {
         self.cursor_style
+    }
+
+    /// Mouse events the application asked to receive.
+    pub fn mouse_tracking(&self) -> MouseTracking {
+        self.mouse_tracking
+    }
+
+    /// Whether the application asked for SGR-encoded mouse reports.
+    pub fn mouse_sgr(&self) -> bool {
+        self.mouse_sgr
     }
 
     /// Get number of lines in scrollback buffer
@@ -1910,6 +1944,25 @@ mod tests {
         b.process(b"\x1b[99M");
         b.process(b"ok");
         assert_eq!(row_text(&b, 0), "ok");
+    }
+
+    #[test]
+    fn mouse_tracking_modes_are_recorded() {
+        let mut b = buf();
+        assert_eq!(b.mouse_tracking(), MouseTracking::Off);
+        b.process(b"\x1b[?1000h\x1b[?1006h");
+        assert_eq!(b.mouse_tracking(), MouseTracking::Normal);
+        assert!(b.mouse_sgr());
+        b.process(b"\x1b[?1002h");
+        assert_eq!(b.mouse_tracking(), MouseTracking::Button);
+        b.process(b"\x1b[?1003h");
+        assert_eq!(b.mouse_tracking(), MouseTracking::Any);
+        b.process(b"\x1b[?1000l\x1b[?1006l");
+        assert_eq!(b.mouse_tracking(), MouseTracking::Off);
+        assert!(!b.mouse_sgr());
+        b.process(b"\x1b[?1000;1006h\x1bc"); // RIS clears it
+        assert_eq!(b.mouse_tracking(), MouseTracking::Off);
+        assert!(!b.mouse_sgr());
     }
 
     #[test]
