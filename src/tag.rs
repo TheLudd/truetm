@@ -4,6 +4,63 @@
 //! Views filter which panes are visible based on selected tags.
 //! A pane appears in a view if it has ANY of the view's tags.
 
+use unicode_width::UnicodeWidthChar;
+
+/// Maximum display width of a tag label in the status bar, ellipsis included.
+pub const LABEL_MAX_WIDTH: usize = 12;
+
+/// Display columns a string occupies in a terminal.
+pub fn display_width(s: &str) -> usize {
+    s.chars().map(|c| UnicodeWidthChar::width(c).unwrap_or(0)).sum()
+}
+
+/// Trim a label to `max` display columns, keeping both ends.
+///
+/// Labels that need trimming are usually worktrees of the same repository:
+/// they share a prefix and differ at the tail, so cutting only the end would
+/// render them identical.
+pub fn trim_label(name: &str, max: usize) -> String {
+    if display_width(name) <= max {
+        return name.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    if max == 1 {
+        return "\u{2026}".to_string();
+    }
+
+    // One column goes to the ellipsis; the head keeps the odd column.
+    let budget = max - 1;
+    let tail_budget = budget / 2;
+    let head_budget = budget - tail_budget;
+
+    let mut head = String::new();
+    let mut head_width = 0;
+    for c in name.chars() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if head_width + w > head_budget {
+            break;
+        }
+        head.push(c);
+        head_width += w;
+    }
+
+    let mut tail: Vec<char> = Vec::new();
+    let mut tail_width = 0;
+    for c in name.chars().rev() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if tail_width + w > tail_budget {
+            break;
+        }
+        tail.push(c);
+        tail_width += w;
+    }
+
+    let tail: String = tail.into_iter().rev().collect();
+    format!("{}\u{2026}{}", head, tail)
+}
+
 /// Bitmask representing a set of tags (supports up to 64 tags)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TagSet(pub u64);
@@ -100,6 +157,44 @@ mod tests {
 
         t.toggle(3);
         assert!(t.contains(3));
+    }
+
+    #[test]
+    fn test_trim_label_leaves_short_names_alone() {
+        assert_eq!(trim_label("master", 12), "master");
+        assert_eq!(trim_label("Documents", 12), "Documents");
+        assert_eq!(trim_label("exactly12chr", 12), "exactly12chr");
+    }
+
+    #[test]
+    fn test_trim_label_keeps_both_ends() {
+        // 6 head + ellipsis + 5 tail
+        assert_eq!(trim_label("aios-app-rebuild", 12), "aios-a\u{2026}build");
+    }
+
+    #[test]
+    fn test_trim_label_distinguishes_sibling_worktrees() {
+        let a = trim_label("aios-app-login-fix", LABEL_MAX_WIDTH);
+        let b = trim_label("aios-app-logout-fix", LABEL_MAX_WIDTH);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_trim_label_respects_display_width() {
+        // Double-width characters count as two columns each.
+        let trimmed = trim_label("\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30b9}\u{30c8}\u{30c7}\u{30fc}\u{30bf}", 12);
+        let width: usize = trimmed
+            .chars()
+            .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+            .sum();
+        assert!(width <= 12, "trimmed to {} columns: {}", width, trimmed);
+    }
+
+    #[test]
+    fn test_trim_label_tiny_budgets() {
+        assert_eq!(trim_label("anything", 0), "");
+        assert_eq!(trim_label("anything", 1), "\u{2026}");
+        assert_eq!(trim_label("anything", 2), "a\u{2026}");
     }
 
     #[test]

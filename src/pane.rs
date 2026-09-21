@@ -289,6 +289,13 @@ impl PaneManager {
             .collect()
     }
 
+    /// The master pane carrying a tag - the one that represents it in the
+    /// status bar. Panes are stored master-first, so this is the same pane the
+    /// tiling layout puts in the master slot.
+    pub fn master_with_tag(&self, tag: u8) -> Option<&Pane> {
+        self.panes.iter().find(|p| p.tags.contains(tag))
+    }
+
     /// Check if any pane has the given tag
     pub fn any_with_tag(&self, tag: u8) -> bool {
         self.panes.iter().any(|p| p.tags.contains(tag))

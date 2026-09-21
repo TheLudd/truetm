@@ -328,6 +328,14 @@ fn truetm_end_to_end() {
     tm.type_line("printf 'e2e-%s\\n' boot-ok");
     tm.wait_for("e2e-boot-ok", None, Duration::from_secs(10));
 
+    // Status bar labels the tag with its master pane's folder, and re-reads it
+    // as the shell cds (two moves, so a one-shot label can't pass).
+    tm.type_line("cd /usr/share");
+    tm.wait_for("1 (share)", None, Duration::from_secs(10));
+    tm.type_line("cd /usr/lib");
+    tm.wait_for("1 (lib)", None, Duration::from_secs(10));
+    tm.type_line(&format!("cd {}", env!("CARGO_MANIFEST_DIR")));
+
     // Wide glyph: the following text must land exactly one column after the
     // emoji's two cells - catches compositor cursor drift on wide chars
     tm.type_line("printf '%s after-wide\\n' \"$(printf '\\xf0\\x9f\\x99\\x82')A\"");

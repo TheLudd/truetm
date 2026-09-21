@@ -29,7 +29,8 @@ use tag::TagSet;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Duration;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 fn main() -> Result<()> {
     env_logger::init();
@@ -104,6 +105,8 @@ struct App {
     zoomed_pane: Option<PaneId>,
     // Mouse selection
     mouse_selection: Option<MouseSelection>,
+    // Per-tag status bar labels, derived from each tag's master pane cwd
+    tag_labels: HashMap<u8, String>,
 }
 
 impl App {
@@ -148,7 +151,27 @@ impl App {
             copy_mode: None,
             zoomed_pane: None,
             mouse_selection: None,
+            tag_labels: HashMap::new(),
         }
+    }
+
+    /// Re-derive the per-tag labels from each tag's master pane working
+    /// directory. Returns true if any label changed, so the caller can redraw.
+    ///
+    /// Called on a timer rather than per frame: each tag costs one readlink of
+    /// /proc/<pid>/cwd, and the label has to follow the shell as it cds.
+    fn refresh_tag_labels(&mut self) -> bool {
+        let mut fresh = HashMap::new();
+        for tag in 0..self.tag_count {
+            if let Some(cwd) = self.panes.master_with_tag(tag).and_then(|p| p.get_cwd()) {
+                fresh.insert(tag, dir_label(&cwd));
+            }
+        }
+        if fresh == self.tag_labels {
+            return false;
+        }
+        self.tag_labels = fresh;
+        true
     }
 
     /// Switch to a tag, updating history (unique stack - moves tag to top if already present)
@@ -1544,6 +1567,11 @@ impl App {
 
         // Initial padding
         write!(stdout, " ")?;
+        let mut used = 1usize;
+
+        // Leave room for the layout name and the indicators drawn after the tags
+        let budget = (self.width as usize)
+            .saturating_sub(self.layout.current_name().chars().count() + 8);
 
         // Render only tags that have panes or are currently viewed
         for tag in 0..self.tag_count {
@@ -1571,9 +1599,20 @@ impl App {
                 queue!(stdout, SetForegroundColor(Color::Rgb { r: 60, g: 100, b: 60 }))?;
             }
 
-            write!(stdout, "{}", tag + 1)?;
+            // Show "N (folder)" when it fits, otherwise fall back to the bare
+            // number rather than wrapping the status line
+            let number = (tag + 1).to_string();
+            let labelled = self.tag_labels.get(&tag).and_then(|name| {
+                let label = tag::trim_label(name, tag::LABEL_MAX_WIDTH);
+                let width = number.len() + tag::display_width(&label) + 3;
+                (used + width + 2 <= budget).then(|| (format!("{} ({})", number, label), width))
+            });
+            let (text, width) = labelled.unwrap_or_else(|| (number.clone(), number.len()));
+
+            write!(stdout, "{}", text)?;
             queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
             write!(stdout, "  ")?;
+            used += width + 2;
         }
 
         // Show layout name
@@ -1691,8 +1730,20 @@ impl App {
     }
 }
 
+/// Short name for a directory: its basename, with `~` for home and `/` for root.
+fn dir_label(path: &Path) -> String {
+    if let Some(home) = std::env::var_os("HOME") {
+        if path == Path::new(&home) {
+            return "~".to_string();
+        }
+    }
+    match path.file_name() {
+        Some(name) => name.to_string_lossy().into_owned(),
+        None => path.to_string_lossy().into_owned(),
+    }
+}
+
 fn run() -> Result<()> {
-    use std::time::Instant;
 
     let (width, height) = terminal::size().context("Failed to get terminal size")?;
 
@@ -1700,6 +1751,7 @@ fn run() -> Result<()> {
 
     // Create initial pane
     app.create_pane()?;
+    app.refresh_tag_labels();
 
     // Set up terminal
     terminal::enable_raw_mode().context("Failed to enable raw mode")?;
@@ -1719,6 +1771,10 @@ fn run() -> Result<()> {
     let frame_duration = Duration::from_micros(16667); // ~60fps
     let mut last_render = Instant::now();
 
+    // Tag labels follow the shell's cwd, so they need re-reading on a timer
+    let label_interval = Duration::from_millis(250);
+    let mut last_labels = Instant::now();
+
     // Main loop
     while app.running {
         // Process all available PTY output first
@@ -1730,6 +1786,13 @@ fn run() -> Result<()> {
         // - Otherwise use longer timeout to reduce CPU usage
         let now = Instant::now();
         let since_render = now.duration_since(last_render);
+
+        if now.duration_since(last_labels) >= label_interval {
+            last_labels = now;
+            if app.refresh_tag_labels() {
+                app.needs_redraw = true;
+            }
+        }
 
         let poll_timeout = if app.needs_redraw && since_render >= frame_duration {
             Duration::ZERO // Render immediately
