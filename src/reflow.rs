@@ -54,9 +54,15 @@ pub fn reflow(
     height: u16,
     scrollback_limit: usize,
 ) -> Reflowed {
-    let (logical, cursor) = to_logical(scrollback, &grid);
-    let (rows, cursor) = to_rows(&logical, cursor, width as usize);
-    place(rows, cursor, width as usize, height as usize, scrollback_limit)
+    let (logical, marks) = to_logical(scrollback, &grid);
+    let (rows, anchor) = to_rows(&logical, marks, width as usize);
+    place(
+        rows,
+        anchor,
+        width as usize,
+        height as usize,
+        scrollback_limit,
+    )
 }
 
 /// Copy a grid into new dimensions without re-breaking anything, anchored at
@@ -85,6 +91,29 @@ pub fn crop(cells: &[Cell], width: u16, height: u16, new_width: u16, new_height:
 
 /// A logical line: the cells of one or more rows joined back together.
 type Logical = Vec<Cell>;
+
+/// A place in the logical text: which logical line, and which column of it.
+type Mark = (usize, usize);
+
+/// Where the screen sat in the text before the resize, as logical marks.
+struct Marks {
+    top: Mark,
+    cursor: Mark,
+    room_below: bool,
+}
+
+/// Where the screen sits in the reflowed rows.
+struct Anchor {
+    /// The row the screen started at.
+    top: usize,
+    /// The row and column the cursor is on.
+    cursor: (usize, usize),
+    /// Whether the old screen had unused rows below its content. A screen
+    /// that was full stays full, pulling rows back out of the scrollback
+    /// when re-breaking frees space; a screen with room to spare keeps that
+    /// room, so one an application cleared is not refilled.
+    room_below: bool,
+}
 
 /// Joins rows into logical lines, following each row's wrapped flag.
 struct Joiner {
@@ -127,15 +156,17 @@ impl Joiner {
     }
 }
 
-fn to_logical(scrollback: &VecDeque<Line>, grid: &Grid) -> (Vec<Logical>, (usize, usize)) {
+fn to_logical(scrollback: &VecDeque<Line>, grid: &Grid) -> (Vec<Logical>, Marks) {
     let mut joiner = Joiner::new();
     for line in scrollback {
         joiner.push(line.cells.clone(), line.wrapped);
     }
 
     let width = grid.width as usize;
+    let rows_in_use = rows_in_use(grid);
+    let top = (joiner.index(), joiner.offset());
     let mut cursor = (joiner.index(), joiner.offset() + grid.cursor.0 as usize);
-    for y in 0..rows_in_use(grid) {
+    for y in 0..rows_in_use {
         let wrapped = grid.wrapped.get(y).copied().unwrap_or(false);
         let mut cells = grid.cells[y * width..(y + 1) * width].to_vec();
         if !wrapped {
@@ -149,7 +180,14 @@ fn to_logical(scrollback: &VecDeque<Line>, grid: &Grid) -> (Vec<Logical>, (usize
         }
         joiner.push(cells, wrapped);
     }
-    (joiner.lines, cursor)
+    (
+        joiner.lines,
+        Marks {
+            top,
+            cursor,
+            room_below: rows_in_use < grid.height as usize,
+        },
+    )
 }
 
 /// Rows of the grid that hold content: everything down to the last non-blank
@@ -170,17 +208,38 @@ fn rows_in_use(grid: &Grid) -> usize {
     (last + 1).min(grid.height as usize)
 }
 
-fn to_rows(logical: &[Logical], cursor: (usize, usize), width: usize) -> (Vec<Line>, (usize, usize)) {
+fn to_rows(logical: &[Logical], marks: Marks, width: usize) -> (Vec<Line>, Anchor) {
     let mut rows: Vec<Line> = Vec::new();
-    let mut out = (0, 0);
+    let mut top = 0;
+    let mut cursor = (0, 0);
     for (index, line) in logical.iter().enumerate() {
         let first = rows.len();
         let starts = break_line(line, width, &mut rows);
-        if index == cursor.0 {
-            out = locate(&starts, first, cursor.1, width, &mut rows);
+        if index == marks.top.0 {
+            top = row_of(&starts, first, marks.top.1, width).min(rows.len());
+        }
+        if index == marks.cursor.0 {
+            cursor = locate(&starts, first, marks.cursor.1, width, &mut rows);
         }
     }
-    (rows, out)
+    (
+        rows,
+        Anchor {
+            top,
+            cursor,
+            room_below: marks.room_below,
+        },
+    )
+}
+
+/// Row a column of a logical line now lives on, without disturbing `rows`.
+fn row_of(starts: &[usize], first_row: usize, col: usize, width: usize) -> usize {
+    for (k, &start) in starts.iter().enumerate().rev() {
+        if col >= start {
+            return first_row + k + usize::from(col - start >= width);
+        }
+    }
+    first_row
 }
 
 /// Break one logical line into rows of at most `width` cells, never
@@ -241,10 +300,27 @@ fn locate(
     (first_row, 0)
 }
 
-/// Split the reflowed rows between scrollback and screen, keeping the cursor
-/// row on screen.
-fn place(rows: Vec<Line>, cursor: (usize, usize), width: usize, height: usize, limit: usize) -> Reflowed {
-    let start = rows.len().saturating_sub(height).min(cursor.0);
+/// Split the reflowed rows between scrollback and screen.
+///
+/// The screen stays where it was in the text: it starts at the row it
+/// started at before, so re-breaking grows the text into the unused rows
+/// below it rather than scrolling it. A screen that was full has no unused
+/// rows, so it is instead kept full from the end of the text, which is what
+/// pulls rows back out of the scrollback when widening rejoins them. Either
+/// way the cursor row has to end up on screen, and that wins over the
+/// anchor.
+fn place(rows: Vec<Line>, anchor: Anchor, width: usize, height: usize, limit: usize) -> Reflowed {
+    let Anchor {
+        top,
+        cursor,
+        room_below,
+    } = anchor;
+    let start = if room_below {
+        top
+    } else {
+        top.min(rows.len().saturating_sub(height))
+    }
+    .clamp(cursor.0.saturating_sub(height.saturating_sub(1)), cursor.0);
 
     let mut cells = vec![Cell::default(); width * height];
     let mut wrapped = vec![false; height];

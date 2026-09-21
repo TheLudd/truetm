@@ -291,6 +291,16 @@ impl Truetm {
         }
     }
 
+    /// Assert `needle` is nowhere on screen as it stands.
+    fn assert_absent(&mut self, needle: &str) {
+        self.pump();
+        let screen = self.grid.text();
+        assert!(
+            !screen.contains(needle),
+            "\"{needle}\" is on screen\nscreen:\n{screen}"
+        );
+    }
+
     /// Wait until the screen contains `needle`. Panics with a screen dump on
     /// timeout, or if `abort_on` shows up first.
     fn wait_for(&mut self, needle: &str, abort_on: Option<&str>, timeout: Duration) {
@@ -370,6 +380,31 @@ fn truetm_end_to_end() {
     tm.writer.write_all(b"\x1b[<64;5;5M").unwrap();
     tm.writer.flush().unwrap();
     tm.wait_for("mouse-fwd-ok", Some("mouse-fwd-bad"), Duration::from_secs(10));
+
+    // A screen the shell cleared must stay clear across a resize. Fill a
+    // second window, clear it with Ctrl+L and swap the master pane (prefix +
+    // Enter), which re-widths both panes: the scrollback must not be pulled
+    // back onto the cleared screen.
+    tm.writer.write_all(&[0x02]).unwrap();
+    tm.writer.write_all(b"c").unwrap();
+    tm.writer.flush().unwrap();
+    tm.type_line("for i in $(seq 40); do printf 'ghost-%s\\n' \"$i\"; done");
+    tm.wait_for("ghost-40", None, Duration::from_secs(10));
+    tm.writer.write_all(&[0x0c]).unwrap(); // Ctrl+L: clear, keeping scrollback
+    tm.writer.flush().unwrap();
+    tm.type_line("printf 'cleared-%s\\n' ok");
+    tm.wait_for("cleared-ok", None, Duration::from_secs(10));
+    tm.assert_absent("ghost-");
+    tm.writer.write_all(&[0x02]).unwrap();
+    tm.writer.write_all(b"\r").unwrap(); // swap master: both panes change width
+    tm.writer.flush().unwrap();
+    tm.type_line("printf 'swapped-%s\\n' ok");
+    tm.wait_for("swapped-ok", None, Duration::from_secs(10));
+    tm.assert_absent("ghost-");
+    tm.writer.write_all(&[0x02]).unwrap();
+    tm.writer.write_all(b"x").unwrap();
+    tm.writer.flush().unwrap();
+    tm.wait_for("1 (dvtr)", None, Duration::from_secs(10));
 
     // Full escape-sequence suite, self-verified inside the pane via DSR
     tm.type_line("bash output-tests/checks.sh");

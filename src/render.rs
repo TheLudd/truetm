@@ -2162,6 +2162,88 @@ mod tests {
             b
         }
 
+        /// 10x4 pane with five lines of scrollback behind it, cleared the
+        /// way Ctrl-L clears a shell, leaving one prompt row on screen.
+        fn cleared_screen() -> ScreenBuffer {
+            let mut b = ScreenBuffer::new(10, 4);
+            b.process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\n");
+            b.process(b"\x1b[2J\x1b[Hprompt");
+            b
+        }
+
+        fn screen_text(b: &ScreenBuffer) -> Vec<String> {
+            (0..4).map(|y| row_text(b, y)).collect()
+        }
+
+        #[test]
+        fn a_clear_leaves_one_row_on_screen_and_the_scrollback_behind_it() {
+            let b = cleared_screen();
+            assert_eq!(
+                (screen_text(&b), b.scrollback_len()),
+                (vec!["prompt".into(), "".into(), "".into(), "".into()], 5)
+            );
+        }
+
+        #[test]
+        fn a_wider_pane_does_not_refill_a_cleared_screen() {
+            let mut b = cleared_screen();
+            b.resize(12, 4);
+            assert_eq!(
+                screen_text(&b),
+                vec!["prompt".to_string(), "".into(), "".into(), "".into()]
+            );
+        }
+
+        #[test]
+        fn a_narrower_pane_does_not_refill_a_cleared_screen() {
+            let mut b = cleared_screen();
+            b.resize(8, 4);
+            assert_eq!(
+                screen_text(&b),
+                vec!["prompt".to_string(), "".into(), "".into(), "".into()]
+            );
+        }
+
+        #[test]
+        fn a_taller_pane_does_not_refill_a_cleared_screen() {
+            let mut b = cleared_screen();
+            b.resize(10, 6);
+            assert_eq!(
+                ((0..6).map(|y| row_text(&b, y)).collect::<Vec<_>>(), b.cursor()),
+                (
+                    vec!["prompt".to_string(), "".into(), "".into(), "".into(), "".into(), "".into()],
+                    (6, 0)
+                )
+            );
+        }
+
+        #[test]
+        fn resizing_a_cleared_screen_keeps_its_scrollback() {
+            let mut b = cleared_screen();
+            b.resize(12, 4);
+            assert_eq!(b.scrollback_len(), 5);
+        }
+
+        #[test]
+        fn a_full_screen_is_refilled_from_the_scrollback_when_widening_frees_rows() {
+            let mut b = ScreenBuffer::new(10, 4);
+            b.process(b"aaaaaaaaaaaaaaa\r\nbbbbbbbbbbbbbbb\r\nccccccccccccccc");
+            assert_eq!(b.scrollback_len(), 2);
+            b.resize(20, 4);
+            assert_eq!(
+                (screen_text(&b), b.scrollback_len()),
+                (
+                    vec![
+                        "aaaaaaaaaaaaaaa".into(),
+                        "bbbbbbbbbbbbbbb".into(),
+                        "ccccccccccccccc".into(),
+                        "".into()
+                    ],
+                    0
+                )
+            );
+        }
+
         #[test]
         fn a_long_line_wraps_at_the_old_width() {
             assert_eq!(row_text(&wrapped_line(), 1), "klmno");
