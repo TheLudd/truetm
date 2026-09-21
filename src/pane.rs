@@ -296,6 +296,11 @@ impl PaneManager {
         self.panes.iter().find(|p| p.tags.contains(tag))
     }
 
+    /// How many panes carry the given tag
+    pub fn count_with_tag(&self, tag: u8) -> usize {
+        self.panes.iter().filter(|p| p.tags.contains(tag)).count()
+    }
+
     /// Check if any pane has the given tag
     pub fn any_with_tag(&self, tag: u8) -> bool {
         self.panes.iter().any(|p| p.tags.contains(tag))

@@ -105,8 +105,8 @@ struct App {
     zoomed_pane: Option<PaneId>,
     // Mouse selection
     mouse_selection: Option<MouseSelection>,
-    // Per-tag status bar labels, derived from each tag's master pane cwd
-    tag_labels: HashMap<u8, String>,
+    // Per-tag status bar entries, derived from the panes carrying each tag
+    tag_info: HashMap<u8, TagInfo>,
 }
 
 impl App {
@@ -151,26 +151,29 @@ impl App {
             copy_mode: None,
             zoomed_pane: None,
             mouse_selection: None,
-            tag_labels: HashMap::new(),
+            tag_info: HashMap::new(),
         }
     }
 
-    /// Re-derive the per-tag labels from each tag's master pane working
-    /// directory. Returns true if any label changed, so the caller can redraw.
+    /// Re-derive what the status bar shows for each tag. Returns true if
+    /// anything changed, so the caller can redraw.
     ///
     /// Called on a timer rather than per frame: each tag costs one readlink of
     /// /proc/<pid>/cwd, and the label has to follow the shell as it cds.
-    fn refresh_tag_labels(&mut self) -> bool {
+    fn refresh_tag_info(&mut self) -> bool {
         let mut fresh = HashMap::new();
         for tag in 0..self.tag_count {
             if let Some(cwd) = self.panes.master_with_tag(tag).and_then(|p| p.get_cwd()) {
-                fresh.insert(tag, dir_label(&cwd));
+                fresh.insert(tag, TagInfo {
+                    label: dir_label(&cwd),
+                    panes: self.panes.count_with_tag(tag),
+                });
             }
         }
-        if fresh == self.tag_labels {
+        if fresh == self.tag_info {
             return false;
         }
-        self.tag_labels = fresh;
+        self.tag_info = fresh;
         true
     }
 
@@ -1599,13 +1602,23 @@ impl App {
                 queue!(stdout, SetForegroundColor(Color::Rgb { r: 60, g: 100, b: 60 }))?;
             }
 
-            // Show "N (folder)" when it fits, otherwise fall back to the bare
-            // number rather than wrapping the status line
+            // Show "N (folder)", with "x2" appended when the tag holds more
+            // than one window. Falls back to the bare number rather than
+            // wrapping the status line.
             let number = (tag + 1).to_string();
-            let labelled = self.tag_labels.get(&tag).and_then(|name| {
-                let label = tag::trim_label(name, tag::LABEL_MAX_WIDTH);
-                let width = number.len() + tag::display_width(&label) + 3;
-                (used + width + 2 <= budget).then(|| (format!("{} ({})", number, label), width))
+            let labelled = self.tag_info.get(&tag).and_then(|info| {
+                let label = tag::trim_label(&info.label, tag::LABEL_MAX_WIDTH);
+                let count = if info.panes > 1 {
+                    format!("\u{d7}{}", info.panes)
+                } else {
+                    String::new()
+                };
+                let width = number.len()
+                    + tag::display_width(&label)
+                    + tag::display_width(&count)
+                    + 3;
+                (used + width + 2 <= budget)
+                    .then(|| (format!("{} ({}{})", number, label, count), width))
             });
             let (text, width) = labelled.unwrap_or_else(|| (number.clone(), number.len()));
 
@@ -1730,6 +1743,15 @@ impl App {
     }
 }
 
+/// What the status bar shows for one tag.
+#[derive(PartialEq, Eq)]
+struct TagInfo {
+    /// Working directory of the tag's master pane
+    label: String,
+    /// How many windows carry the tag
+    panes: usize,
+}
+
 /// Short name for a directory: its basename, with `~` for home and `/` for root.
 fn dir_label(path: &Path) -> String {
     if let Some(home) = std::env::var_os("HOME") {
@@ -1751,7 +1773,7 @@ fn run() -> Result<()> {
 
     // Create initial pane
     app.create_pane()?;
-    app.refresh_tag_labels();
+    app.refresh_tag_info();
 
     // Set up terminal
     terminal::enable_raw_mode().context("Failed to enable raw mode")?;
@@ -1789,7 +1811,7 @@ fn run() -> Result<()> {
 
         if now.duration_since(last_labels) >= label_interval {
             last_labels = now;
-            if app.refresh_tag_labels() {
+            if app.refresh_tag_info() {
                 app.needs_redraw = true;
             }
         }

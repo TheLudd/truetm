@@ -88,8 +88,9 @@ The status bar labels each tag with the working directory of its master
 window, so tags read as `1 (truetm) 2 (Documents) 3 (aios-a…build)` instead of
 bare numbers. The label follows the shell as it `cd`s, and long names are
 trimmed in the middle - sibling worktrees share a prefix and differ at the
-tail, so both ends are kept. Tags fall back to a bare number when the status
-bar runs out of width.
+tail, so both ends are kept. A tag holding more than one window shows the
+count, as in `2 (Documents×3)`. Tags fall back to a bare number when the
+status bar runs out of width.
 
 ### Copy Mode (Vim-style Scrollback)
 

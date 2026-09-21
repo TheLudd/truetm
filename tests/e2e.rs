@@ -334,6 +334,18 @@ fn truetm_end_to_end() {
     tm.wait_for("1 (share)", None, Duration::from_secs(10));
     tm.type_line("cd /usr/lib");
     tm.wait_for("1 (lib)", None, Duration::from_secs(10));
+
+    // A tag holding more than one window says so, and drops the count again
+    // when it is back down to one. (prefix is Ctrl+B)
+    tm.writer.write_all(&[0x02]).unwrap();
+    tm.writer.write_all(b"c").unwrap();
+    tm.writer.flush().unwrap();
+    tm.wait_for("1 (lib\u{d7}2)", None, Duration::from_secs(10));
+    tm.writer.write_all(&[0x02]).unwrap();
+    tm.writer.write_all(b"x").unwrap();
+    tm.writer.flush().unwrap();
+    tm.wait_for("1 (lib)", None, Duration::from_secs(10));
+
     tm.type_line(&format!("cd {}", env!("CARGO_MANIFEST_DIR")));
 
     // Wide glyph: the following text must land exactly one column after the
