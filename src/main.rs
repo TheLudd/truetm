@@ -5,6 +5,7 @@ mod copy_mode;
 mod layout;
 mod mouse;
 mod pane;
+mod reflow;
 mod render;
 mod tag;
 

@@ -3,6 +3,7 @@
 use crate::config;
 use crate::mouse::MouseTracking;
 use crate::pane::Rect;
+use crate::reflow::{self, Grid, Line};
 use crossterm::{
     cursor::MoveTo,
     queue,
@@ -22,12 +23,12 @@ fn char_width(ch: char) -> usize {
     UnicodeWidthChar::width(ch).unwrap_or(0)
 }
 
-fn is_wide(ch: char) -> bool {
+pub(crate) fn is_wide(ch: char) -> bool {
     char_width(ch) == 2
 }
 
 /// Text attributes as bitflags
-#[derive(Clone, Copy, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Attrs(u8);
 
 impl Attrs {
@@ -56,7 +57,7 @@ impl Attrs {
 }
 
 /// A cell in the screen buffer
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cell {
     pub ch: char,
     pub fg: Option<Color>,
@@ -81,6 +82,10 @@ const DEFAULT_SCROLLBACK: usize = config::SCROLLBACK_LINES;
 /// Screen buffer for a pane - stores the current display state
 pub struct ScreenBuffer {
     cells: Vec<Cell>,
+    // Per row: whether its text ran past the right edge and continued on the
+    // next row (a soft wrap) rather than ending there. Only soft wraps may be
+    // re-broken when the pane changes width; see `reflow`.
+    wrapped: Vec<bool>,
     width: u16,
     height: u16,
     cursor_x: u16,
@@ -99,6 +104,7 @@ pub struct ScreenBuffer {
     utf8_remaining: u8,
     // Alternate screen buffer support
     saved_cells: Option<Vec<Cell>>,
+    saved_wrapped: Option<Vec<bool>>,
     saved_cursor: Option<(u16, u16)>,
     in_alternate_screen: bool,
     // Window title (set via OSC sequences)
@@ -111,7 +117,7 @@ pub struct ScreenBuffer {
     scroll_top: u16,
     scroll_bottom: u16,
     // Scrollback buffer - lines that scrolled off the top
-    scrollback: std::collections::VecDeque<Vec<Cell>>,
+    scrollback: std::collections::VecDeque<Line>,
     scrollback_limit: usize,
     // Mouse reporting requested by the application (DECSET 1000/1002/1003)
     mouse_tracking: MouseTracking,
@@ -141,6 +147,7 @@ impl ScreenBuffer {
     pub fn new(width: u16, height: u16) -> Self {
         Self {
             cells: vec![Cell::default(); (width as usize) * (height as usize)],
+            wrapped: vec![false; height as usize],
             width,
             height,
             cursor_x: 0,
@@ -154,6 +161,7 @@ impl ScreenBuffer {
             utf8_buffer: Vec::new(),
             utf8_remaining: 0,
             saved_cells: None,
+            saved_wrapped: None,
             saved_cursor: None,
             in_alternate_screen: false,
             title: None,
@@ -173,43 +181,76 @@ impl ScreenBuffer {
         std::mem::take(&mut self.response_queue)
     }
 
-    /// Resize the buffer
+    /// Resize the buffer, re-breaking wrapped lines to the new width.
+    ///
+    /// Hard breaks (the application printed a newline) are preserved; soft
+    /// wraps (the text ran past the right edge) are recalculated. Rows move
+    /// between the scrollback and the screen as needed, so narrowing pushes
+    /// the extra rows into the scrollback instead of dropping them and
+    /// widening pulls them back.
     pub fn resize(&mut self, width: u16, height: u16) {
         if width == self.width && height == self.height {
             return;
         }
 
-        let mut new_cells = vec![Cell::default(); (width as usize) * (height as usize)];
-
-        // Copy existing content
-        for y in 0..self.height.min(height) {
-            for x in 0..self.width.min(width) {
-                let old_idx = (y as usize) * (self.width as usize) + (x as usize);
-                let new_idx = (y as usize) * (width as usize) + (x as usize);
-                new_cells[new_idx] = self.cells[old_idx];
-            }
-        }
-
-        self.cells = new_cells;
-
-        // A narrower width can cut a wide-char pair at the right edge,
-        // leaving a lead glyph whose continuation cell was dropped.
-        if width < self.width && width > 0 {
-            for y in 0..height as usize {
-                let last = y * width as usize + (width as usize - 1);
-                if last < self.cells.len() && is_wide(self.cells[last].ch) {
-                    self.cells[last].ch = ' ';
-                }
-            }
+        if width == 0 || height == 0 {
+            self.cells = Vec::new();
+            self.wrapped = Vec::new();
+            self.cursor_x = 0;
+            self.cursor_y = 0;
+        } else if self.in_alternate_screen {
+            // The alternate screen belongs to the running application, which
+            // repaints it on SIGWINCH: crop it and let the app redraw.
+            self.cells = reflow::crop(&self.cells, self.width, self.height, width, height);
+            self.wrapped.resize(height as usize, false);
+            self.cursor_x = self.cursor_x.min(width - 1);
+            self.cursor_y = self.cursor_y.min(height - 1);
+            self.reflow_saved_screen(width, height);
+        } else {
+            let grid = Grid {
+                cells: &self.cells,
+                wrapped: &self.wrapped,
+                width: self.width,
+                height: self.height,
+                cursor: (self.cursor_x, self.cursor_y),
+            };
+            let out = reflow::reflow(&self.scrollback, grid, width, height, self.scrollback_limit);
+            self.scrollback = out.scrollback;
+            self.cells = out.cells;
+            self.wrapped = out.wrapped;
+            self.cursor_x = out.cursor.0;
+            self.cursor_y = out.cursor.1;
         }
 
         self.width = width;
         self.height = height;
-        self.cursor_x = self.cursor_x.min(width.saturating_sub(1));
-        self.cursor_y = self.cursor_y.min(height.saturating_sub(1));
         // Reset scroll region to full screen
         self.scroll_top = 0;
         self.scroll_bottom = height.saturating_sub(1);
+    }
+
+    /// Reflow the primary screen while it is parked behind an alternate
+    /// screen, so it comes back at the right size when the application exits.
+    fn reflow_saved_screen(&mut self, width: u16, height: u16) {
+        let Some(saved) = self.saved_cells.take() else {
+            return;
+        };
+        let flags = self
+            .saved_wrapped
+            .take()
+            .unwrap_or_else(|| vec![false; self.height as usize]);
+        let grid = Grid {
+            cells: &saved,
+            wrapped: &flags,
+            width: self.width,
+            height: self.height,
+            cursor: self.saved_cursor.unwrap_or((0, 0)),
+        };
+        let out = reflow::reflow(&self.scrollback, grid, width, height, self.scrollback_limit);
+        self.scrollback = out.scrollback;
+        self.saved_cells = Some(out.cells);
+        self.saved_wrapped = Some(out.wrapped);
+        self.saved_cursor = Some(out.cursor);
     }
 
     /// Process raw bytes from PTY
@@ -842,6 +883,7 @@ impl ScreenBuffer {
         }
         // Save current screen and cursor
         self.saved_cells = Some(self.cells.clone());
+        self.saved_wrapped = Some(self.wrapped.clone());
         self.saved_cursor = Some((self.cursor_x, self.cursor_y));
         self.in_alternate_screen = true;
         // Clear the screen for the alternate buffer
@@ -855,10 +897,17 @@ impl ScreenBuffer {
             return;
         }
         // Restore saved screen and cursor
+        let saved_wrapped = self.saved_wrapped.take();
         if let Some(saved) = self.saved_cells.take() {
-            // Only restore if dimensions match
+            // Only restore if dimensions match. A resize while the alternate
+            // screen was up reflows the saved screen too, so they normally do.
             if saved.len() == self.cells.len() {
                 self.cells = saved;
+                if let Some(flags) = saved_wrapped {
+                    if flags.len() == self.wrapped.len() {
+                        self.wrapped = flags;
+                    }
+                }
             } else {
                 // Dimensions changed, just clear
                 self.erase_all();
@@ -1032,8 +1081,11 @@ impl ScreenBuffer {
             return; // degenerate one-column pane, glyph can't fit at all
         }
 
-        // Wrap if the glyph doesn't fit on the current line
+        // Wrap if the glyph doesn't fit on the current line. The row being
+        // left continues onto the next one, so mark it as a soft wrap: a
+        // later resize re-breaks it, unlike a newline from the application.
         if self.cursor_x >= self.width || (width == 2 && self.cursor_x + 1 >= self.width) {
+            self.set_wrapped(self.cursor_y, true);
             self.cursor_x = 0;
             self.line_feed();
         }
@@ -1142,7 +1194,7 @@ impl ScreenBuffer {
         if top == 0 && !self.in_alternate_screen {
             // Use slice copy for efficiency
             let line = self.cells[0..width].to_vec();
-            self.scrollback.push_back(line);
+            self.scrollback.push_back(Line::new(line, self.wrapped[0]));
             // Trim scrollback if over limit
             if self.scrollback.len() > self.scrollback_limit {
                 self.scrollback.pop_front();
@@ -1161,6 +1213,9 @@ impl ScreenBuffer {
         for cell in &mut self.cells[last_row..last_row + width] {
             *cell = blank;
         }
+
+        self.wrapped.copy_within(top + 1..bottom + 1, top);
+        self.wrapped[bottom] = false;
     }
 
     fn scroll_down(&mut self) {
@@ -1182,6 +1237,11 @@ impl ScreenBuffer {
         for cell in &mut self.cells[first_row..first_row + width] {
             *cell = blank;
         }
+
+        for y in (top + 1..=bottom).rev() {
+            self.wrapped[y] = self.wrapped[y - 1];
+        }
+        self.wrapped[top] = false;
     }
 
     fn insert_lines(&mut self, n: usize) {
@@ -1211,6 +1271,13 @@ impl ScreenBuffer {
             for cell in &mut self.cells[start..start + width] {
                 *cell = blank;
             }
+        }
+
+        for row in (y..bottom + 1 - n).rev() {
+            self.wrapped[row + n] = self.wrapped[row];
+        }
+        for row in y..y + n {
+            self.wrapped[row] = false;
         }
     }
 
@@ -1244,6 +1311,13 @@ impl ScreenBuffer {
                 *cell = blank;
             }
         }
+
+        if y + n <= bottom {
+            self.wrapped.copy_within(y + n..bottom + 1, y);
+        }
+        for row in (bottom + 1 - n)..=bottom {
+            self.wrapped[row] = false;
+        }
     }
 
     /// Create a blank cell with current background color (for erase operations)
@@ -1256,11 +1330,19 @@ impl ScreenBuffer {
         }
     }
 
+    /// Record whether row `y` continues onto the next one.
+    fn set_wrapped(&mut self, y: u16, wrapped: bool) {
+        if let Some(flag) = self.wrapped.get_mut(y as usize) {
+            *flag = wrapped;
+        }
+    }
+
     fn erase_all(&mut self) {
         let blank = self.blank_cell();
         for cell in &mut self.cells {
             *cell = blank;
         }
+        self.wrapped.iter_mut().for_each(|flag| *flag = false);
     }
 
     fn erase_below(&mut self) {
@@ -1271,6 +1353,9 @@ impl ScreenBuffer {
         let start = (self.cursor_y as usize + 1) * width;
         for cell in &mut self.cells[start..] {
             *cell = blank;
+        }
+        for flag in self.wrapped.iter_mut().skip(self.cursor_y as usize + 1) {
+            *flag = false;
         }
     }
 
@@ -1283,9 +1368,13 @@ impl ScreenBuffer {
         for cell in &mut self.cells[..end] {
             *cell = blank;
         }
+        for flag in self.wrapped.iter_mut().take(self.cursor_y as usize) {
+            *flag = false;
+        }
     }
 
     fn erase_line(&mut self) {
+        self.set_wrapped(self.cursor_y, false);
         let blank = self.blank_cell();
         let y = self.cursor_y as usize;
         let width = self.width as usize;
@@ -1296,6 +1385,7 @@ impl ScreenBuffer {
     }
 
     fn erase_line_right(&mut self) {
+        self.set_wrapped(self.cursor_y, false);
         self.unsplit_wide_pair(self.cursor_x, self.cursor_y);
         let blank = self.blank_cell();
         let y = self.cursor_y as usize;
@@ -1380,7 +1470,7 @@ impl ScreenBuffer {
         } else {
             // Scrollback: y = -1 is most recent, y = -scrollback_len is oldest
             let scrollback_idx = (self.scrollback.len() as i32 + y) as usize;
-            if let Some(line) = self.scrollback.get(scrollback_idx) {
+            if let Some(line) = self.scrollback.get(scrollback_idx).map(|l| &l.cells) {
                 if x < line.len() {
                     return line[x];
                 }
@@ -1409,7 +1499,7 @@ impl ScreenBuffer {
         if y < scroll_offset && scroll_offset <= scrollback_len {
             // This row is in the scrollback buffer
             let scrollback_idx = scrollback_len - scroll_offset + y;
-            if let Some(line) = self.scrollback.get(scrollback_idx) {
+            if let Some(line) = self.scrollback.get(scrollback_idx).map(|l| &l.cells) {
                 if x < line.len() {
                     return line[x];
                 }
@@ -2049,5 +2139,135 @@ mod tests {
         seq.extend(b"AFTER");
         b.process(&seq);
         assert_eq!(row_text(&b, 0), "AFTER");
+    }
+
+    /// Resize re-breaks soft wraps (text that ran past the right edge) and
+    /// preserves hard breaks (newlines the application printed).
+    mod reflow_on_resize {
+        use super::*;
+
+        /// 10x4 pane holding one 15-character line, soft-wrapped after
+        /// column 10.
+        fn wrapped_line() -> ScreenBuffer {
+            let mut b = ScreenBuffer::new(10, 4);
+            b.process(b"abcdefghijklmno");
+            b
+        }
+
+        /// 10x4 pane holding four 8-character lines the application ended
+        /// itself: a full screen that needs eight rows at half the width.
+        fn four_hard_lines() -> ScreenBuffer {
+            let mut b = ScreenBuffer::new(10, 4);
+            b.process(b"aaaaaaaa\r\nbbbbbbbb\r\ncccccccc\r\ndddddddd");
+            b
+        }
+
+        #[test]
+        fn a_long_line_wraps_at_the_old_width() {
+            assert_eq!(row_text(&wrapped_line(), 1), "klmno");
+        }
+
+        #[test]
+        fn widening_rejoins_a_wrapped_line() {
+            let mut b = wrapped_line();
+            b.resize(20, 4);
+            assert_eq!(row_text(&b, 0), "abcdefghijklmno");
+        }
+
+        #[test]
+        fn widening_empties_the_row_the_text_came_from() {
+            let mut b = wrapped_line();
+            b.resize(20, 4);
+            assert_eq!(row_text(&b, 1), "");
+        }
+
+        #[test]
+        fn widening_moves_the_cursor_with_its_text() {
+            let mut b = wrapped_line();
+            b.resize(20, 4);
+            assert_eq!(b.cursor(), (15, 0));
+        }
+
+        #[test]
+        fn narrowing_rebreaks_at_the_new_width() {
+            let mut b = wrapped_line();
+            b.resize(5, 4);
+            assert_eq!(
+                [row_text(&b, 0), row_text(&b, 1), row_text(&b, 2)],
+                ["abcde", "fghij", "klmno"]
+            );
+        }
+
+        #[test]
+        fn widening_keeps_hard_breaks_apart() {
+            let mut b = four_hard_lines();
+            b.resize(40, 4);
+            assert_eq!(
+                [row_text(&b, 0), row_text(&b, 1)],
+                ["aaaaaaaa", "bbbbbbbb"]
+            );
+        }
+
+        #[test]
+        fn erasing_a_line_clears_its_wrap() {
+            let mut b = wrapped_line();
+            b.process(b"\x1b[1;1H\x1b[2Kx");
+            b.resize(20, 4);
+            assert_eq!(row_text(&b, 1), "klmno");
+        }
+
+        #[test]
+        fn narrowing_pushes_overflowing_rows_into_the_scrollback() {
+            let mut b = four_hard_lines();
+            b.resize(5, 4);
+            assert_eq!(b.scrollback_len(), 4);
+        }
+
+        #[test]
+        fn narrowing_keeps_the_last_line_on_screen() {
+            let mut b = four_hard_lines();
+            b.resize(5, 4);
+            assert_eq!(row_text(&b, 3), "ddd");
+        }
+
+        #[test]
+        fn narrowing_keeps_the_cursor_on_screen() {
+            let mut b = four_hard_lines();
+            b.resize(5, 4);
+            assert_eq!(b.cursor(), (3, 3));
+        }
+
+        #[test]
+        fn widening_pulls_rows_back_out_of_the_scrollback() {
+            let mut b = four_hard_lines();
+            b.resize(5, 4);
+            b.resize(10, 4);
+            assert_eq!((row_text(&b, 0), b.scrollback_len()), ("aaaaaaaa".to_string(), 0));
+        }
+
+        #[test]
+        fn blank_rows_below_the_text_do_not_become_blank_lines() {
+            let mut b = ScreenBuffer::new(10, 4);
+            b.process(b"abc");
+            b.resize(10, 2);
+            assert_eq!((row_text(&b, 0), b.scrollback_len()), ("abc".to_string(), 0));
+        }
+
+        #[test]
+        fn a_rebreak_does_not_split_a_double_width_character() {
+            let mut b = ScreenBuffer::new(10, 4);
+            b.process("ab\u{6f22}\u{5b57}".as_bytes());
+            b.resize(3, 4);
+            assert_eq!((b.get(0, 1).ch, b.get(1, 1).ch), ('\u{6f22}', WIDE_CONT));
+        }
+
+        #[test]
+        fn the_primary_screen_survives_a_resize_behind_the_alternate_screen() {
+            let mut b = ScreenBuffer::new(10, 4);
+            b.process(b"hello\x1b[?1049h");
+            b.resize(20, 4);
+            b.process(b"\x1b[?1049l");
+            assert_eq!(row_text(&b, 0), "hello");
+        }
     }
 }
