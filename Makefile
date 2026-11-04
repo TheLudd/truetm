@@ -2,13 +2,19 @@ PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 MANDIR = $(PREFIX)/share/man/man1
 
-all: build
+BIN = target/release/truetm
+SRC = $(shell find src -name '*.rs') Cargo.toml Cargo.lock
 
-build:
+all: $(BIN)
+
+# The binary is a real target so `sudo make install` after `make` only copies
+# it: a phony build target would rerun cargo as root and leave root-owned
+# files in target/.
+$(BIN): $(SRC)
 	cargo build --release
 
-install: build
-	install -Dm755 target/release/truetm $(DESTDIR)$(BINDIR)/truetm
+install: $(BIN)
+	install -Dm755 $(BIN) $(DESTDIR)$(BINDIR)/truetm
 	install -Dm644 truetm.1 $(DESTDIR)$(MANDIR)/truetm.1
 
 uninstall:
@@ -18,4 +24,4 @@ uninstall:
 clean:
 	cargo clean
 
-.PHONY: all build install uninstall clean
+.PHONY: all install uninstall clean
