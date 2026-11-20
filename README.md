@@ -92,6 +92,14 @@ tail, so both ends are kept. A tag holding more than one window shows the
 count, as in `2 (Documents×3)`. Tags fall back to a bare number when the
 status bar runs out of width.
 
+A shell can name its tag itself by sending `ESC ] 7770 ; label BEL`, for
+example from its prompt hook; panes get `TRUETM=1` so the shell knows it may.
+That label wins over the folder name until the shell sends an empty one.
+
+```zsh
+[[ -n $TRUETM ]] && printf '\e]7770;%s\a' "$label"
+```
+
 ### Copy Mode (Vim-style Scrollback)
 
 Enter copy mode with:

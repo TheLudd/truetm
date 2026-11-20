@@ -109,6 +109,8 @@ pub struct ScreenBuffer {
     in_alternate_screen: bool,
     // Window title (set via OSC sequences)
     title: Option<String>,
+    // Tag label sent by the shell (OSC 7770), empty clears it
+    tag_label: Option<String>,
     // Cursor visibility (controlled by CSI ?25h/l)
     cursor_visible: bool,
     // Cursor style (DECSCUSR: CSI Ps SP q). 0 = terminal default.
@@ -143,6 +145,10 @@ enum ParseState {
 const MAX_CSI_LEN: usize = 256;
 const MAX_OSC_LEN: usize = 4096;
 
+/// Private OSC code a shell uses to name its pane's tag: `ESC ] 7770 ; label BEL`.
+/// A code of its own, so programs setting the window title cannot overwrite it.
+const TAG_LABEL_OSC: &str = "7770";
+
 impl ScreenBuffer {
     pub fn new(width: u16, height: u16) -> Self {
         Self {
@@ -165,6 +171,7 @@ impl ScreenBuffer {
             saved_cursor: None,
             in_alternate_screen: false,
             title: None,
+            tag_label: None,
             cursor_visible: true,
             cursor_style: 0,
             scroll_top: 0,
@@ -543,6 +550,9 @@ impl ScreenBuffer {
                         // 1 = set icon name
                         // 2 = set window title
                         self.title = Some(text.to_string());
+                    }
+                    TAG_LABEL_OSC => {
+                        self.tag_label = Some(text.to_string()).filter(|t| !t.is_empty());
                     }
                     _ => {} // Ignore other OSC commands
                 }
@@ -1432,6 +1442,11 @@ impl ScreenBuffer {
         self.title.as_deref()
     }
 
+    /// Tag label the shell sent, if any
+    pub fn tag_label(&self) -> Option<&str> {
+        self.tag_label.as_deref()
+    }
+
     pub fn cursor_visible(&self) -> bool {
         self.cursor_visible
     }
@@ -1786,6 +1801,24 @@ mod tests {
 
     fn buf() -> ScreenBuffer {
         ScreenBuffer::new(80, 24)
+    }
+
+    #[test]
+    fn tag_label_osc_sets_and_clears_the_label() {
+        let mut b = buf();
+        b.process(b"\x1b]7770;aios:master \xe2\x80\xba fassa\x07");
+        assert_eq!(b.tag_label(), Some("aios:master \u{203a} fassa"));
+        b.process(b"\x1b]7770;\x1b\\");
+        assert_eq!(b.tag_label(), None);
+    }
+
+    #[test]
+    fn title_osc_leaves_the_tag_label_alone() {
+        let mut b = buf();
+        b.process(b"\x1b]7770;gaius\x07");
+        b.process(b"\x1b]2;nvim\x07");
+        assert_eq!(b.tag_label(), Some("gaius"));
+        assert_eq!(b.title(), Some("nvim"));
     }
 
     #[test]

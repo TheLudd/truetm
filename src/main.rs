@@ -118,6 +118,8 @@ impl App {
         let mut env_vars = vec![
             ("TERM".to_string(), std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string())),
             ("COLORTERM".to_string(), "truecolor".to_string()),
+            // Lets the shell know it may send its tag label (OSC 7770)
+            ("TRUETM".to_string(), "1".to_string()),
         ];
 
         for var in ["HOME", "USER", "SHELL", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
@@ -158,14 +160,22 @@ impl App {
     /// Re-derive what the status bar shows for each tag. Returns true if
     /// anything changed, so the caller can redraw.
     ///
-    /// Called on a timer rather than per frame: each tag costs one readlink of
-    /// /proc/<pid>/cwd, and the label has to follow the shell as it cds.
+    /// The label is the one the master pane's shell sent (OSC 7770), else the
+    /// folder name of its cwd. Called on a timer rather than per frame: the
+    /// fallback costs one readlink of /proc/<pid>/cwd, and the label has to
+    /// follow the shell as it cds.
     fn refresh_tag_info(&mut self) -> bool {
         let mut fresh = HashMap::new();
         for tag in 0..self.tag_count {
-            if let Some(cwd) = self.panes.master_with_tag(tag).and_then(|p| p.get_cwd()) {
+            let Some(pane) = self.panes.master_with_tag(tag) else { continue };
+            let sent = self.buffers.get(&pane.id).and_then(|b| b.tag_label());
+            let label = match sent {
+                Some(label) => Some(label.to_string()),
+                None => pane.get_cwd().map(|cwd| dir_label(&cwd)),
+            };
+            if let Some(label) = label {
                 fresh.insert(tag, TagInfo {
-                    label: dir_label(&cwd),
+                    label,
                     panes: self.panes.count_with_tag(tag),
                 });
             }
